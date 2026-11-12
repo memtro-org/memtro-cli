@@ -161,11 +161,22 @@ test("a session starts and ends while the update refresh never finishes", async 
 });
 
 test("outcomes in words, and memtro update's exit codes", async () => {
-  assert.deepEqual(describeOutcome({ kind: "updated", from: "0.2.0", to: "0.3.0", path: "/x/memtro" }), { text: "Updated to 0.3.0. It starts the next time you run memtro.", code: 0, ok: true });
+  assert.deepEqual(describeOutcome({ kind: "updated", from: "0.2.0", to: "0.3.0", path: "/x/memtro", attestation: "verified" }), {
+    text: "Updated to 0.3.0 (build attestation verified). It starts the next time you run memtro.",
+    code: 0,
+    ok: true,
+  });
+  assert.deepEqual(describeOutcome({ kind: "updated", from: "0.2.0", to: "0.3.0", path: "/x/memtro", attestation: "unchecked", detail: "GitHub's API was unreachable" }), {
+    text: "Updated to 0.3.0. The build attestation could not be checked: GitHub's API was unreachable. The download matched its published checksum. It starts the next time you run memtro.",
+    code: 0,
+    ok: true,
+  });
+  const dirty = describeOutcome({ kind: "updated", from: "0.2.0", to: "0.3.0", path: "/x", attestation: "unchecked", detail: "bad\u001b[2J\nline" });
+  assert.doesNotMatch(dirty.text, /\u001b|\n/, "an unchecked detail is cleaned before it reaches a terminal");
   assert.equal(describeOutcome({ kind: "current", version: "0.3.0" }).text, "memtro 0.3.0 is the latest release; nothing to do.");
-  const un = describeOutcome({ kind: "unmanaged", reason: "installed with npm", howTo: "npm install -g @memtro/cli@latest" });
+  const un = describeOutcome({ kind: "unmanaged", reason: "it runs from a checkout", howTo: "git pull, then npm ci && npm run build" });
   assert.equal(un.code, 2);
-  assert.match(un.text, /cannot update itself: installed with npm\nnpm install -g @memtro\/cli@latest/);
+  assert.match(un.text, /cannot update itself: it runs from a checkout\ngit pull, then npm ci && npm run build/);
   const failed = describeOutcome({ kind: "failed", reason: "checksum mismatch\u001b[2J" });
   assert.equal(failed.code, 1);
   assert.doesNotMatch(failed.text, /\u001b/, "a reason is cleaned before it reaches a terminal");
@@ -175,7 +186,7 @@ test("outcomes in words, and memtro update's exit codes", async () => {
   assert.throws(() => requestedVersion("latest"), /--version must be a release number/);
 
   const cases: [UpdateOutcome, number][] = [
-    [{ kind: "updated", from: "0.1.0", to: "0.3.0", path: "/x" }, 0],
+    [{ kind: "updated", from: "0.1.0", to: "0.3.0", path: "/x", attestation: "verified" }, 0],
     [{ kind: "current", version: "0.1.0" }, 0],
     [{ kind: "failed", reason: "no network" }, 1],
     [{ kind: "unmanaged", reason: "a dev checkout", howTo: "git pull" }, 2],

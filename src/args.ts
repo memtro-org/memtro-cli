@@ -160,11 +160,15 @@ export const COMMANDS: CommandSpec[] = [
     summary: "Update memtro to the latest release",
     usage: "memtro update [--version <x.y.z>]",
     details:
-      "Downloads the release for this computer from GitHub, checks its SHA-256 against the release's checksums,\n" +
-      "proves it starts, and puts it in place of this one; it runs from the next time you start memtro.\n" +
-      "--version installs that release instead of the latest. Only the standalone memtro can update itself, and only in a directory\n" +
-      "you can write to and other users cannot; any other install is told how to update. Exit 0 when updated or already current,\n" +
-      "1 when the update failed (nothing was replaced), 2 when this install cannot update itself.",
+      "Downloads the release for this computer from GitHub, checks its SHA-256 against the release's checksums and its\n" +
+      "build attestation (refused when GitHub has none or it fails a check; when it cannot be checked, the update goes on\n" +
+      "the checksum and says so), proves it starts, and puts it in place of this one; it runs from the next time you start\n" +
+      "memtro. --version installs that release instead of the latest.\n" +
+      "Only the standalone executable updates itself: on macOS or Linux, arm64 or x86_64, in a directory you can write to\n" +
+      "and other users cannot, and not inside node_modules, Homebrew, Nix, a snap, /usr, /bin, /sbin or /opt. Any other\n" +
+      "copy (one built from source, for instance) is told how to update and nothing is downloaded.\n" +
+      "Exit 0 when updated or already current, 1 when the update failed or was refused (nothing was replaced), 2 when this\n" +
+      "copy cannot update itself.",
     options: { version: { type: "string" } },
     positionals: "none",
   },

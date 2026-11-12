@@ -29,7 +29,7 @@ The older one-shot commands (`ask`, `search`, `remember`, `why`, `tools`, `call`
 curl -fsSL https://raw.githubusercontent.com/memtro-org/memtro-cli/main/install.sh | sh
 ```
 
-This installs one standalone executable, `memtro`, in `~/.memtro/bin`. It needs no Node.js. It runs on macOS (Apple silicon and Intel) and on Linux with glibc (x86_64 and arm64). On Windows, run it inside [WSL](https://learn.microsoft.com/windows/wsl/install). Alpine and other musl-based Linux are not supported yet: the script says so and stops.
+This installs one standalone executable, `memtro`, in `~/.memtro/bin`. It needs no Node.js. It runs on macOS (Apple silicon and Intel) and on Linux with glibc (x86_64 and arm64). Windows is supported through [WSL](https://learn.microsoft.com/windows/wsl/install): run the script inside WSL. No native Windows build is released, and the script refuses to run natively on Windows; where this README mentions native Windows paths, they apply only to a copy you [built from source](#from-source). Alpine and other musl-based Linux are not supported yet: the script says so and stops; [build from source](#from-source) there.
 
 What the script does, in order:
 
@@ -50,28 +50,44 @@ It never uses `sudo` and never asks a question. It changes nothing outside the i
 curl -fsSL https://raw.githubusercontent.com/memtro-org/memtro-cli/main/install.sh | MEMTRO_VERSION=0.2.0 MEMTRO_MODIFY_PATH=1 sh
 ```
 
-To read the script before you run it, download it first: `curl -fsSL -o install.sh https://raw.githubusercontent.com/memtro-org/memtro-cli/main/install.sh`. Each release's builds also carry a GitHub build-provenance attestation. Check one with `gh attestation verify memtro-darwin-arm64.tar.gz -R memtro-org/memtro-cli`.
+To read the script before you run it, download it first: `curl -fsSL -o install.sh https://raw.githubusercontent.com/memtro-org/memtro-cli/main/install.sh`. The script checks the download's SHA-256 only; it does not check the build attestation (see [Update](#update) for what that is and how to check an install by hand).
 
 On macOS, the first start after an install or update takes a second or two while the system checks the new file. After that it starts in about 40 ms.
 
 ### From source
 
-With Node.js 20 or later:
+Node.js is needed only here, to build from source. `package.json` declares Node.js 20 or later; the tests run on Node.js 24 only, so 24 is the version known to work.
 
 ```bash
 git clone https://github.com/memtro-org/memtro-cli && cd memtro-cli
 npm ci && npm run build && npm link     # `memtro` now runs dist/main.js
 ```
 
-To build the standalone executable for this computer, use Node.js 24: `npm run bundle && npm run build:sea`. That writes `build/memtro-<os>-<arch>` and its tarball.
+To update a copy built this way: `git pull`, then `npm ci && npm run build` again. It cannot update itself (see [Update](#update)).
+
+To build the standalone executable for this computer, use Node.js 24 (the build refuses any other major version): `npm run bundle && npm run build:sea`. That writes `build/memtro-<os>-<arch>` and its tarball.
 
 ## Update
 
-In a session, type `/update`. Outside one, run `memtro update`. To pick a version, use `memtro update --version 0.3.0`. Either way, memtro downloads the release for your system, checks its SHA-256 against the release's `checksums.txt` and proves the new file starts. Then it swaps the new file in. The running copy carries on; the new version starts the next time you run `memtro`. If anything fails, the installed file is left exactly as it was.
+In a session, type `/update`. Outside one, run `memtro update`. To pick a version, use `memtro update --version 0.3.0`. Either way, memtro downloads the release for your system, checks its SHA-256 against the release's `checksums.txt`, checks its build attestation (below), and proves the new file starts. Then it swaps the new file in. The running copy carries on; the new version starts the next time you run `memtro`. If anything fails, the installed file is left exactly as it was.
+
+**The build attestation.** Every release tarball is attested by the release workflow (`actions/attest`), which records in Sigstore's public transparency log that this exact file was built by `.github/workflows/release.yml` in `memtro-org/memtro-cli` at the release's tag. Before the new file is unpacked or run, `memtro update` asks GitHub's API for the provenance attestations of the tarball's SHA-256 and verifies them itself, against a copy of Sigstore's trusted root built into memtro: the signature over the statement, the signing certificate's chain to Sigstore's certificate authority at the time of signing, that time as signed by the transparency log, that the log entry is for this signature and certificate, that the statement names this file's SHA-256, and that the certificate was issued to exactly that workflow, repository (by name and by numeric id), owner id and tag, for a run started by pushing that tag, on a GitHub-hosted runner. The signature, the statement and the identity are checked first, so an attestation that fails them is refused even when it also names a log or key this version does not know. There are three outcomes:
+
+- **Verified.** The update goes ahead: "Updated to 0.3.0 (build attestation verified)."
+- **Refused.** GitHub answered and has no attestation for this file, or the attestation fails any of those checks. Nothing is replaced, and `memtro update` exits 1. A file the release workflow did not build is not a memtro release.
+- **Could not be checked.** GitHub's API could not be reached, timed out, refused for its rate limit (60 unauthenticated requests an hour from one address) or failed; or the attestation is in a form this version of memtro cannot judge (a newer bundle format or transparency log, or a Sigstore key newer than the trusted root it carries; Sigstore rotates its keys a few times a year). The update goes ahead on the checksum alone and says so: "Updated to 0.3.0. The build attestation could not be checked: GitHub's API was unreachable. The download matched its published checksum." This is never used for an attestation that can be checked and is wrong.
+
+The check does not look at Certificate Transparency or at the log's inclusion proof (the signed entry timestamp is checked), and it cannot know about a revoked certificate. The request to GitHub's API carries no key, no cookie and nothing from your profile.
+
+The install script checks the SHA-256 only. To check an installed release by hand, download its tarball and run, with the [GitHub CLI](https://cli.github.com) signed in:
+
+```bash
+gh attestation verify memtro-darwin-arm64.tar.gz -R memtro-org/memtro-cli
+```
 
 The update check sends no key, no cookie and nothing from your Memtro profile. It is a plain request to GitHub, made at most once a day at the start of an interactive session. It never delays start-up. When a newer version exists, the next session says so in one line. To turn the check off, set `MEMTRO_NO_UPDATE_CHECK=1`, or put `"updateCheck": false` in `config.json`. It is also off when `CI` is set. `/update` works either way.
 
-`memtro update` only replaces the standalone executable (the one the install script installs), and only in a directory you can write to that other users cannot, and never inside `node_modules`, Homebrew, Nix, a snap, or a system directory (`/usr`, `/bin`, `/sbin`, `/opt`). If you installed with npm, update with `npm install -g @memtro/cli@latest`. For a copy anywhere else, update it the way you installed it, or run the install script again.
+Which copies can update themselves: only the standalone executable (the one the install script installs, or one you built with `npm run build:sea`), on macOS or Linux, on arm64 or x86_64, in a directory you can write to and other users cannot, and not inside `node_modules`, Homebrew, Nix, a snap, or a system directory (`/usr`, `/bin`, `/sbin`, `/opt`). Any other copy is told why and how instead, and nothing is downloaded: a copy built from source (`npm link`, `dist/main.js`) updates with `git pull` and `npm ci && npm run build`; a copy in a directory you cannot write to, or one others can write to, by running the install script again; a copy a package manager put somewhere, the way it was installed.
 
 ## Uninstall
 
@@ -98,7 +114,8 @@ Run `memtro logout` first if you want the key revoked on Memtro and removed from
 | `/login` | Sign in again, perhaps as somebody else; the conversation carries on with the new key. |
 | `/logout` | Revoke this computer's key, remove it, and end the session. |
 | `/update` | Update memtro to the latest release; it starts the next time you run memtro. |
-| `/tools`, `/whoami`, `/help`, `/quit` | |
+| `/tools`, `/whoami`, `/help` | |
+| `/quit` or `/exit` | Leave (Ctrl-D does too). |
 
 When a newer release is known, the session's first lines say so ("memtro 0.3.0 is available (you have 0.2.0). Type /update."). That comes from the answer of the last check, kept on disk; a new check runs in the background, at most once a day, never delays start-up and prints nothing. It asks GitHub for the latest release and sends nothing about you or your key. `MEMTRO_NO_UPDATE_CHECK=1`, or `"updateCheck": false` in `config.json`, turns the line off; `/update` still works. It is never shown in `memtro run`, with `--json`, or when stdout is not a terminal.
 
@@ -107,8 +124,10 @@ After each turn one line says which model answered, the tokens the turn used, ho
 Options: `--model <id>`, `--mode ask|auto`, `--continue` (this directory's latest session), `--resume [<id>]`, `--actions`, `--no-classifier`, `--allow-edits`, `--allow "<command prefix>"` (repeatable), `--unchecked`, plus the usual `--profile`, `--base-url`, `--no-browser`, `--verbose`, `--json` (for `run`). The same settings can live in `config.json` beside `profiles`:
 
 ```json
-{ "mode": "auto", "classifier": { "model": "anthropic/claude-haiku-4-5-20251001", "enabled": true }, "actions": false, "updateCheck": true }
+{ "mode": "auto", "classifier": { "model": "anthropic/claude-haiku-4-5-20251001", "enabled": true, "timeoutMs": 8000 }, "actions": false, "updateCheck": true }
 ```
+
+`classifier.timeoutMs` is how long, in milliseconds, the safety check may take before the call is put to you instead: a whole number, default 8000. Anything above 60000 is treated as 60000.
 
 ## Safety
 
@@ -124,7 +143,7 @@ Read this before you use it on anything you care about.
 4. Something you allowed earlier "for this session" runs.
 5. In `ask` mode, every edit, command and remote action is put to you.
 6. In `auto` mode (the default), edits inside the repository and a short list of read-only commands (below) run without asking. Everything else (other commands, edits or reads outside the repository, actions in connected systems) is judged by the **safety check**: a separate call to a model, which answers allow, ask or block. Its doubts are put to you; a block is refused and the model is told why.
-7. If the safety check is off, times out (8 seconds), fails, or answers anything other than a clean verdict, the call is **put to you**. It fails closed to asking, never to running.
+7. If the safety check is off, times out (8 seconds by default; `classifier.timeoutMs` in `config.json` changes it, up to a cap of 60 seconds), fails, or answers anything other than a clean verdict, the call is **put to you**. It fails closed to asking, never to running.
 
 **What the safety check sees.** What you have typed in this session (the most recent last, capped), the working directory and whether it is a git repository, the titles of earlier calls this turn, and the pending call: tool, kind, title, the command in full, the paths, and the diff (capped). It never sees tool results or the model's own words, so a file or web page cannot argue its case to it. Everything quoted to it is marked as data, and titles (which the agent writes, including a command's description) are marked as the agent's words, not the person's. If any part of the pending call had to be cut to fit, an "allow" is turned into a question for you. It runs on the cheapest model your account lists that it recognises; under your organisation's routing lock that is your organisation's default model, and an administrator can allow explicit models so a small one is used. `classifier.model` in `config.json` picks one; `--no-classifier` or `classifier.enabled: false` turns it off, and then `auto` behaves exactly like `ask`.
 
@@ -154,7 +173,7 @@ For `read`, `edit` and `write`, on the real path after symlinks: memtro's config
 and not use an option that runs, writes or follows links: `find -exec`, `-execdir`, `-ok`, `-okdir`, `-delete`, `-fprint…`, `-fls`, `-L`, `-H`, `-follow`; `rg --pre…`, `--hostname-bin`, `--search-zip`/`-z`, `-L`/`--follow`; `grep -R`, `-S`, `--dereference-recursive` (and its abbreviations); `file -C`/`--compile`; `git … --output…`, `--ext-diff`, `--exec…`, or any git option before the subcommand. Every argument must stay inside the repository: no absolute path elsewhere, no `..`, and nothing that leads out of it through a symbolic link; and the working directory must be inside it. In a session whose repository is your home directory or above, nothing is on the list.
 <!-- /gate-lists -->
 
-On Windows, commands are not analysed (cmd.exe syntax), so the read-only list and command-prefix rules never match: every command goes to the safety check or to you.
+Run natively on Windows (only possible with a copy built from source; inside WSL it is Linux), commands are not analysed (cmd.exe syntax), so the read-only list and command-prefix rules never match: every command goes to the safety check or to you.
 
 **What this does not protect against.**
 
@@ -168,7 +187,7 @@ On Windows, commands are not analysed (cmd.exe syntax), so the read-only list an
 - `.env` files inside the repository are readable without asking.
 - The safety check is shown what you typed in the session (that is how it knows what you asked for), and it is a model: it can be wrong.
 
-**What is kept on this computer.** Each session is saved as JSON lines under `${XDG_STATE_HOME:-~/.local/state}/memtro/sessions/` (`%LOCALAPPDATA%\memtro\sessions` on Windows), in a 0700 directory with 0600 files, so it can be resumed. **Those files contain the contents of files the agent read and the output of commands it ran.** If the program is stopped while a tool call is running, the saved session is still one Memtro will accept: when it is loaded again, that call is given a result saying its outcome is not known. What you type at the prompt is kept per directory in `…/memtro/history/`, also 0600; a line that starts with a space, a multi-line message, and a line holding a Memtro key are not kept. Commands the agent runs (and the `git` and `rg` it uses for searching) get your environment without `MEMTRO_API_KEY`, `MEMTRO_CREDENTIALS`, any other `MEMTRO_*` key, token or secret variable, and any variable whose value holds a Memtro key.
+**What is kept on this computer.** Each session is saved as JSON lines under `${XDG_STATE_HOME:-~/.local/state}/memtro/sessions/` (`%LOCALAPPDATA%\memtro\sessions` for a copy built from source and run natively on Windows), in a 0700 directory with 0600 files, so it can be resumed. **Those files contain the contents of files the agent read and the output of commands it ran.** If the program is stopped while a tool call is running, the saved session is still one Memtro will accept: when it is loaded again, that call is given a result saying its outcome is not known. What you type at the prompt is kept per directory in `…/memtro/history/`, also 0600; a line that starts with a space, a multi-line message, and a line holding a Memtro key are not kept. Commands the agent runs (and the `git` and `rg` it uses for searching) get your environment without `MEMTRO_API_KEY`, `MEMTRO_CREDENTIALS`, any other `MEMTRO_*` key, token or secret variable, and any variable whose value holds a Memtro key.
 
 ## Signing in
 
@@ -214,6 +233,7 @@ How it works, for anybody reviewing it: OAuth 2.0 authorization code with PKCE (
 | `memtro call <tool>` | Call one. `--arg key=value` sends a string, `--arg key:=<json>` a number, boolean, list or object; or `--input '<json>'`. |
 | `memtro token` | Print the key, for another program. |
 | `memtro update` | Update to the latest release (`--version x.y.z` for a given one); see [Update](#update). |
+| `memtro help [<command>]` | The list of commands, or one command's options. Same as `--help`. |
 
 `memtro help <command>` for the details of each. Every command takes `--profile`, `--base-url`, `--no-browser`, `--json`, `--verbose` and `--no-color`.
 
@@ -291,7 +311,7 @@ Settings that are not secret (each profile's host, who it signed in as, when its
 | Platform | Directory |
 |---|---|
 | macOS, Linux | `${XDG_CONFIG_HOME:-~/.config}/memtro` |
-| Windows | `%APPDATA%\memtro` |
+| Windows (a copy built from source, run natively) | `%APPDATA%\memtro` |
 
 `--verbose` says which profile, host and store a command used and what it requested. It never prints a key, a code or a verifier, and nor does any error message.
 
@@ -319,9 +339,9 @@ The host is remembered for the profile, so every later command goes there. `MEMT
 
 ## Trust
 
-The CLI talks to the Memtro host of the profile you are using and, to check for and download updates, to GitHub's release pages for this repository; nothing else, and it sends no telemetry. Update requests carry no key, no cookie and nothing from your profile. It has no runtime dependencies: everything is Node's own (`fetch`, `node:http`, `node:crypto`, `node:child_process`, `node:readline`). Outside a coding session, the child processes it starts are your browser opener (`open`, `xdg-open` or `rundll32`, with an argument list, never a shell) and the keychain tool; in a session, the agent also runs the commands described under [Safety](#safety), plus `git` and `rg` for listing and searching files. Read [`src/`](src/).
+The CLI talks to the Memtro host of the profile you are using and, to check for and download updates, to GitHub's release pages for this repository, GitHub's API for this repository's build attestations, and the storage host GitHub's API names for an attestation bundle; nothing else, and it sends no telemetry. Update requests carry no key, no cookie and nothing from your profile. A base URL must be `https://`; plain `http://` is accepted only for `localhost`, `127.0.0.1` and `[::1]`, because a sign-in code and key would otherwise travel unencrypted. A profile that already stores a plain-http address elsewhere is refused when used, not rewritten. It has no runtime dependencies: everything is Node's own (`fetch`, `node:http`, `node:crypto`, `node:child_process`, `node:readline`). Outside a coding session, the child processes it starts are your browser opener (`open`, `xdg-open`, or `rundll32` natively on Windows, with an argument list, never a shell) and the keychain tool; in a session, the agent also runs the commands described under [Safety](#safety), plus `git` and `rg` for listing and searching files. Read [`src/`](src/).
 
-Requires Node 20 or newer.
+The released executable needs nothing installed. Node.js is needed only to [build from source](#from-source).
 
 ## Licence
 

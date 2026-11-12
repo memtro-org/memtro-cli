@@ -229,7 +229,9 @@ export async function startSession(ctx: Context, opts: { approver: Approver; int
   }
   const gate = d.createGate({
     mode,
-    classifier: classifier.model ? { call: d.forcedCallVia(client), model: classifier.model } : null,
+    classifier: classifier.model
+      ? { call: d.forcedCallVia(client), model: classifier.model, ...(settings.classifier.timeoutMs !== undefined ? { timeoutMs: settings.classifier.timeoutMs } : {}) }
+      : null,
     home: d.home,
     platform: d.platform,
     configDir: ctx.dir,

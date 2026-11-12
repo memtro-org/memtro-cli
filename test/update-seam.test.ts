@@ -123,11 +123,20 @@ test("seam: `memtro update` as the real built executable: current 0, updated 0, 
     assert.match(failed.err, /checksum does not match/);
     assert.equal(sha256(readFileSync(exe)), sha256(readFileSync(BUILT)), "nothing replaced");
 
-    gh.requests.length = 0;
+    // No attestation exists for a tarball built here: GitHub's answer (404) refuses the update, and nothing is replaced.
     publish(NEWER, fakeExecutable(NEWER));
+    const unattested = await runBuilt(exe, ["update"], home);
+    assert.equal(unattested.code, 1, unattested.out + unattested.err);
+    assert.match(unattested.err, /not a memtro release build/);
+    assert.equal(sha256(readFileSync(exe)), sha256(readFileSync(BUILT)), "nothing replaced");
+
+    // GitHub's API failing: the update proceeds on the checksum and says the attestation could not be checked.
+    gh.requests.length = 0;
+    gh.intercept = (path, res) => (path.startsWith("/repos/memtro-org/memtro-cli/attestations/") ? (res.writeHead(503).end(), true) : false);
     const updated = await runBuilt(exe, ["update"], home);
+    gh.intercept = null;
     assert.equal(updated.code, 0, updated.err);
-    assert.match(updated.out, new RegExp(`Updated to ${NEWER.replace(/\./g, "\\.")}\\. It starts the next time you run memtro\\.`));
+    assert.match(updated.out, new RegExp(`Updated to ${NEWER.replace(/\./g, "\\.")}\\. The build attestation could not be checked: GitHub's API failed \\(HTTP 503\\)\\. The download matched its published checksum\\. It starts the next time you run memtro\\.`));
     assert.equal(readFileSync(exe, "utf8"), fakeExecutable(NEWER).toString(), "the verified file is now in place");
     for (const r of gh.requests) {
       assert.equal(r.headers.authorization, undefined);

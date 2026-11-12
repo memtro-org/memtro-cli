@@ -44,12 +44,14 @@ export interface ProfileConfig {
 /**
  * The coding session's settings, written by hand: `mode` ("ask" | "auto"), `classifier.model` (a model id),
  * `classifier.enabled` (false turns the safety check's model off, so everything it would judge is asked),
+ * `classifier.timeoutMs` (how long the safety check may take before the call is put to you; default 8000, capped
+ * at 60000 by the classifier),
  * `actions` (true lets Memtro's tools change connected systems). Top level of the file, beside `profiles`: a
  * profile's entry is rewritten whole by every sign-in, so settings kept there would be lost.
  */
 export interface HarnessConfig {
   mode?: "ask" | "auto";
-  classifier: { model?: string; enabled?: boolean };
+  classifier: { model?: string; enabled?: boolean; timeoutMs?: number };
   actions?: boolean;
 }
 
@@ -122,7 +124,18 @@ export function updateProfile(dir: string, profile: string, change: (current: Pr
 
 export const trimBase = (url: string): string => url.trim().replace(/\/+$/, "");
 
-/** An http(s) URL with no path beyond `/`, no query, no credentials. Anything else is a typo or a trap. */
+/**
+ * Plain http is allowed only to this computer: these three host names exactly, as the URL parser normalises them
+ * (it lowercases, and turns 127.1 or [0:0::1] into the forms below). `localhost.` with its trailing dot is a DNS name
+ * like any other and is not on the list.
+ */
+const LOOPBACK_HOSTS = new Set(["127.0.0.1", "[::1]", "localhost"]);
+
+/**
+ * An http(s) URL with no path beyond `/`, no query, no credentials, and plain http only to a loopback address.
+ * Anything else is a typo or a trap. Every base URL goes through this: `--base-url`, `MEMTRO_BASE_URL`, and a
+ * profile's stored `base_url` at the moment it is used (a stored one is refused, never rewritten).
+ */
 export function checkBaseUrl(raw: string): string {
   let url: URL;
   try {
@@ -132,6 +145,11 @@ export function checkBaseUrl(raw: string): string {
     throw new UsageError(`Not a URL: ${JSON.stringify(raw)}. Give the address Memtro is served at, e.g. https://platform.memtro.com`);
   }
   if (url.protocol !== "https:" && url.protocol !== "http:") throw new UsageError(`The base URL must be http(s); got ${JSON.stringify(raw)}.`);
+  if (url.protocol === "http:" && !LOOPBACK_HOSTS.has(url.hostname)) {
+    throw new UsageError(
+      `The base URL ${JSON.stringify(raw)} is plain http to another computer: a sign-in code and key would travel unencrypted. Use https:// (plain http is allowed only for localhost, 127.0.0.1 and [::1]).`,
+    );
+  }
   if (url.username || url.password) throw new UsageError("The base URL must not carry a user name or password.");
   if (url.search || url.hash) throw new UsageError("The base URL must not carry a query or fragment.");
   return trimBase(url.toString());
@@ -175,7 +193,7 @@ export function harnessSettings(config: ConfigFile, where = "config.json"): Harn
       out.actions = v.actions;
     }
     if (v.classifier !== undefined) {
-      const c = v.classifier as { model?: unknown; enabled?: unknown } | null;
+      const c = v.classifier as { model?: unknown; enabled?: unknown; timeoutMs?: unknown } | null;
       if (!c || typeof c !== "object" || Array.isArray(c)) throw bad(`${label}classifier`, "an object", v.classifier);
       if (c.model !== undefined) {
         if (typeof c.model !== "string" || !c.model.trim()) throw bad(`${label}classifier.model`, "a model id", c.model);
@@ -184,6 +202,10 @@ export function harnessSettings(config: ConfigFile, where = "config.json"): Harn
       if (c.enabled !== undefined) {
         if (typeof c.enabled !== "boolean") throw bad(`${label}classifier.enabled`, "true or false", c.enabled);
         out.classifier.enabled = c.enabled;
+      }
+      if (c.timeoutMs !== undefined) {
+        if (typeof c.timeoutMs !== "number" || !Number.isInteger(c.timeoutMs) || c.timeoutMs <= 0) throw bad(`${label}classifier.timeoutMs`, "a whole number of milliseconds", c.timeoutMs);
+        out.classifier.timeoutMs = c.timeoutMs;
       }
     }
   }

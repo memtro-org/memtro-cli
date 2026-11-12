@@ -1,5 +1,5 @@
 import { ApiClient } from "../api/client.js";
-import { updateProfile } from "../config.js";
+import { checkBaseUrl, updateProfile } from "../config.js";
 import type { Context } from "../context.js";
 import { CliError, errorText, EXIT } from "../errors.js";
 import { writeJson } from "../output.js";
@@ -17,7 +17,8 @@ export async function logout(ctx: Context): Promise<number> {
   const kind = ctx.profileConfig.store;
   const store = kind ? ctx.store() : null;
   const key = store ? await store.get(profile).catch(() => null) : null;
-  const base = ctx.profileConfig.base_url ?? ctx.resolved.baseUrl;
+  // The host that issued the key, checked again at use: a stored plain-http address is refused, never sent the key.
+  const base = checkBaseUrl(ctx.profileConfig.base_url ?? ctx.resolved.baseUrl);
 
   let revoked: "revoked" | "already-gone" | "failed" | "no-key" = "no-key";
   let problem: CliError | null = null;

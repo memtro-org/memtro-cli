@@ -53,6 +53,8 @@ function deps(over: Partial<UpdateDeps> = {}): UpdateDeps {
     platform: process.platform,
     arch: process.arch,
     isSea: true,
+    // The attestation check has its own tests (attest-*.test.ts); here it is a stand-in that always verifies.
+    verifyAttestation: async () => ({ status: "verified" }),
     ...over,
   };
 }
@@ -75,7 +77,7 @@ test("success: the new version replaces the executable, starts, and reports itse
   publish(NEWER);
   const progress: string[] = [];
   const out = await performUpdate(deps(), { signal: new AbortController().signal, onProgress: (t) => progress.push(t) });
-  assert.deepEqual(out, { kind: "updated", from: VERSION, to: NEWER, path: exe });
+  assert.deepEqual(out, { kind: "updated", from: VERSION, to: NEWER, path: exe, attestation: "verified" });
   assert.equal(execFileSync(exe, ["--version"], { encoding: "utf8" }).trim(), NEWER);
   assert.equal(statSync(exe).mode & 0o777, 0o755);
   assert.deepEqual(readdirSync(join(dir, "bin")), ["memtro"]);
@@ -104,7 +106,7 @@ test("a pinned version, with or without the v", async () => {
   publish(NEWER);
   const pinned = makeRelease("3.1.4", { [TARGET]: fakeExecutable("3.1.4") });
   gh.releases.set(pinned.tag, pinned);
-  assert.deepEqual(await update(deps(), "v3.1.4"), { kind: "updated", from: VERSION, to: "3.1.4", path: exe });
+  assert.deepEqual(await update(deps(), "v3.1.4"), { kind: "updated", from: VERSION, to: "3.1.4", path: exe, attestation: "verified" });
   assert.ok(!gh.requests.some((r) => r.url.includes("latest")), "a pinned version never asks for latest");
 });
 
@@ -179,7 +181,8 @@ test("not a single executable (npm, a checkout): unmanaged", async () => {
   publish(NEWER);
   const out = await update(deps({ isSea: false }));
   assert.equal(out.kind, "unmanaged");
-  assert.match((out as { howTo: string }).howTo, /npm install -g @memtro\/cli/);
+  assert.match((out as { howTo: string }).howTo, /git pull/);
+  assert.doesNotMatch((out as { howTo: string }).howTo, /npm install -g/, "the npm package is not published");
   assert.equal(gh.requests.length, 0);
   assertUntouched();
 });

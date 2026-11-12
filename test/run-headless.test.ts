@@ -229,6 +229,10 @@ test("config: harness settings are read strictly and survive a rewrite", async (
   });
   assert.throws(() => harnessSettings({ version: 1, profiles: {}, mode: "auto " }), /mode must be/);
   assert.throws(() => harnessSettings({ version: 1, profiles: {}, classifier: { enabled: "no" } }), /classifier.enabled/);
+  assert.equal(harnessSettings({ version: 1, profiles: {}, classifier: { timeoutMs: 20_000 } }).classifier.timeoutMs, 20_000);
+  for (const bad of [0, -1, 1.5, "8000", null]) {
+    assert.throws(() => harnessSettings({ version: 1, profiles: {}, classifier: { timeoutMs: bad } }), /classifier.timeoutMs/, String(bad));
+  }
   const { readConfig, updateProfile } = await import("../src/config.js");
   const dir = mkdtempSync(join(tmpdir(), "memtro-cfg-"));
   writeFileSync(join(dir, "config.json"), JSON.stringify({ version: 1, profiles: {}, mode: "ask", classifier: { model: "m" } }));

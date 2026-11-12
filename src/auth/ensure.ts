@@ -2,7 +2,7 @@ import { hostname } from "node:os";
 import { createInterface } from "node:readline";
 import { ApiClient } from "../api/client.js";
 import { bool } from "../args.js";
-import { updateProfile, type StoreKind } from "../config.js";
+import { checkBaseUrl, updateProfile, type StoreKind } from "../config.js";
 import { refreshContext, type Context } from "../context.js";
 import { AuthError, CliError, errorText, KeyRefusedError, notSignedIn, UsageError } from "../errors.js";
 import { humanDate, relativeDays } from "../output.js";
@@ -193,7 +193,13 @@ async function save(ctx: Context, tokens: TokenResponse): Promise<Saved> {
   const notes: string[] = [];
 
   const previousKind = ctx.profileConfig.store;
-  const previousBase = ctx.profileConfig.base_url ?? base;
+  // The host the previous key came from, checked again: a stored plain-http address is never sent a key.
+  let previousBase: string | null = base;
+  try {
+    previousBase = ctx.profileConfig.base_url ? checkBaseUrl(ctx.profileConfig.base_url) : base;
+  } catch {
+    previousBase = null;
+  }
   const previous = previousKind ? await openStore(previousKind, ctx.dir, ctx.env).get(profile).catch(() => null) : null;
 
   let kind: StoreKind = preferredKind(ctx.env);
@@ -229,8 +235,13 @@ async function save(ctx: Context, tokens: TokenResponse): Promise<Saved> {
   let replaced: Saved["replaced"] = null;
   if (previous && previous !== tokens.api_key) {
     if (previousKind && previousKind !== kind) await openStore(previousKind, ctx.dir, ctx.env).delete(profile).catch(() => false);
-    replaced = (await revoke(previousBase, previous, profile)) ? "revoked" : "not-revoked";
-    if (replaced === "not-revoked") notes.push(`The key this profile held before could not be revoked; it stays valid until it expires. Revoke it at ${previousBase}/dashboard/profile/keys.`);
+    if (previousBase === null) {
+      replaced = "not-revoked";
+      notes.push("The key this profile held before was issued by a plain-http address, so it was not sent there to be revoked; it stays valid until it expires.");
+    } else {
+      replaced = (await revoke(previousBase, previous, profile)) ? "revoked" : "not-revoked";
+      if (replaced === "not-revoked") notes.push(`The key this profile held before could not be revoked; it stays valid until it expires. Revoke it at ${previousBase}/dashboard/profile/keys.`);
+    }
   }
   return { tokens, store, replaced, notes };
 }

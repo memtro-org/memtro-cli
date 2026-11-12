@@ -5,6 +5,7 @@ import { open, rename, rm } from "node:fs/promises";
 import { dirname, join, sep } from "node:path";
 import { sessionsDir } from "../agent/session-store.js";
 import { VERSION } from "../version.js";
+import { checkAttestation, type AttestationVerifier } from "./attest/index.js";
 import { FetchRefused, releaseGet, releaseSource, type ReleaseSource } from "./net.js";
 import { compareVersions, normaliseVersion } from "./semver.js";
 import { extractSingleFile, TarError } from "./tar.js";
@@ -24,9 +25,12 @@ export interface UpdateDeps {
   platform: NodeJS.Platform;
   arch: string;
   isSea: boolean;
+  /** Checks the download's build attestation; the real one (attest/index.ts) unless a test hands in another. */
+  verifyAttestation?: AttestationVerifier;
 }
 export type UpdateOutcome =
-  | { kind: "updated"; from: string; to: string; path: string }
+  /** `attestation`: "verified", or "unchecked" with `detail` saying why it could not be checked (the checksum still matched). */
+  | { kind: "updated"; from: string; to: string; path: string; attestation: "verified" | "unchecked"; detail?: string }
   | { kind: "current"; version: string }
   | { kind: "unmanaged"; reason: string; howTo: string }
   | { kind: "failed"; reason: string };
@@ -250,13 +254,13 @@ export async function performUpdate(
     return { kind: "unmanaged", reason: `there is no standalone memtro for ${deps.platform}`, howTo: "On Windows, use memtro inside WSL." };
   }
   if (deps.arch !== "arm64" && deps.arch !== "x64") {
-    return { kind: "unmanaged", reason: `there is no standalone memtro for ${deps.platform}-${deps.arch}`, howTo: "Update with: npm install -g @memtro/cli@latest" };
+    return { kind: "unmanaged", reason: `there is no standalone memtro for ${deps.platform}-${deps.arch}`, howTo: "Build it from source instead: see https://github.com/memtro-org/memtro-cli#from-source" };
   }
   if (!deps.isSea) {
     return {
       kind: "unmanaged",
-      reason: "it is not the standalone executable (it was installed with npm, or runs from a checkout)",
-      howTo: "Update with: npm install -g @memtro/cli@latest (from a checkout: git pull, then npm run build).",
+      reason: "it is not the standalone executable (it runs from a checkout, or was installed some other way)",
+      howTo: `From a checkout: git pull, then npm ci && npm run build. To switch to the standalone executable: ${INSTALL_COMMAND}`,
     };
   }
   let target: string;
@@ -347,6 +351,13 @@ export async function performUpdate(
     const actual = await download(res, archive);
     if (actual !== expected) throw new Error(`the download's checksum does not match checksums.txt (expected ${expected}, got ${actual}); nothing was changed`);
 
+    // Before anything is extracted or run: the build attestation of exactly this tarball, for exactly this version.
+    progress("Checking the build attestation…");
+    const verifyAttestation = deps.verifyAttestation ?? checkAttestation;
+    const attested = await verifyAttestation({ digest: actual, version, env: deps.env, fetch: deps.fetch, signal: opts.signal });
+    if (opts.signal.aborted) throw new Error("cancelled");
+    if (attested.status === "refused") throw new Error(`the download is not a memtro release build: ${attested.reason}; nothing was changed`);
+
     progress("Verifying…");
     await extractSingleFile(archive, "memtro", fresh, 0o755);
     chmodSync(fresh, 0o755);
@@ -358,7 +369,9 @@ export async function performUpdate(
     // rename(2) swaps the directory entry: this process keeps running on the old file, the next start gets the new one.
     await rename(fresh, target);
     swapped = true;
-    return { kind: "updated", from: VERSION, to: version, path: target };
+    return attested.status === "verified"
+      ? { kind: "updated", from: VERSION, to: version, path: target, attestation: "verified" }
+      : { kind: "updated", from: VERSION, to: version, path: target, attestation: "unchecked", detail: attested.reason };
   } catch (err) {
     return { kind: "failed", reason: reasonOf(err, opts.signal) };
   } finally {

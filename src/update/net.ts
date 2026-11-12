@@ -9,6 +9,7 @@ import { VERSION } from "../version.js";
 export const DEFAULT_RELEASE_BASE = "https://github.com/memtro-org/memtro-cli/releases";
 
 /** Where GitHub sends `releases/download/...` (observed 2026-11-12: release-assets; objects is the older host). */
+// The attestation check's hosts are separate (attestationSource below): a release download never goes there.
 const GITHUB_HOSTS = new Set(["github.com", "release-assets.githubusercontent.com", "objects.githubusercontent.com"]);
 const MAX_HOPS = 5;
 
@@ -51,6 +52,40 @@ export function releaseSource(env: NodeJS.ProcessEnv): ReleaseSource {
     base: DEFAULT_RELEASE_BASE,
     allowed: (u) =>
       u.protocol === "https:" && GITHUB_HOSTS.has(u.hostname) && !u.username && !u.password && !u.port && (u.hostname !== "github.com" || u.pathname.startsWith(repoPath)),
+  };
+}
+
+/**
+ * Where the build-attestation check may go: GitHub's REST API, for this repository's attestations only, and the
+ * storage host GitHub's `bundle_url` points at (observed 2026-11-12: tmaproduction.blob.core.windows.net, a
+ * per-object signed URL; the bundle is fetched there only when the API sends no inline copy). Same rules as the
+ * release hosts: https, no port, no user, exact host names. Under `MEMTRO_RELEASE_BASE` (tests) its one origin
+ * stands in for both.
+ */
+export const ATTESTATION_API = "https://api.github.com";
+const ATTESTATION_PATH = "/repos/memtro-org/memtro-cli/attestations/";
+const BUNDLE_HOSTS = new Set(["tmaproduction.blob.core.windows.net"]);
+
+export interface AttestationSource {
+  /** `https://api.github.com`, or the test origin. */
+  api: string;
+  allowedApi(url: URL): boolean;
+  allowedBundle(url: URL): boolean;
+}
+
+export function attestationSource(env: NodeJS.ProcessEnv): AttestationSource {
+  if (env.MEMTRO_RELEASE_BASE) {
+    // releaseSource validates the override (https, or http on a loopback address) and throws when it is wrong.
+    const release = releaseSource(env);
+    const origin = new URL(release.base).origin;
+    const same = (u: URL): boolean => u.origin === origin && !u.username && !u.password;
+    return { api: origin, allowedApi: (u) => same(u) && u.pathname.startsWith(ATTESTATION_PATH), allowedBundle: same };
+  }
+  const plain = (u: URL): boolean => u.protocol === "https:" && !u.username && !u.password && !u.port;
+  return {
+    api: ATTESTATION_API,
+    allowedApi: (u) => plain(u) && u.hostname === "api.github.com" && u.pathname.startsWith(ATTESTATION_PATH),
+    allowedBundle: (u) => plain(u) && BUNDLE_HOSTS.has(u.hostname) && u.pathname.startsWith("/attestations/"),
   };
 }
 

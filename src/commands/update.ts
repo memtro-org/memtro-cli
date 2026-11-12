@@ -71,7 +71,14 @@ export function describeOutcome(o: UpdateOutcome): { text: string; code: number;
   switch (o.kind) {
     case "updated": {
       const to = cleanVersion(o.to) ?? "the new version";
-      return { text: `Updated to ${to}. It starts the next time you run memtro.`, code: EXIT.ok, ok: true };
+      const next = "It starts the next time you run memtro.";
+      if (o.attestation === "verified") return { text: `Updated to ${to} (build attestation verified). ${next}`, code: EXIT.ok, ok: true };
+      const why = oneLine(o.detail ?? "no reason was given").replace(/\.$/, "");
+      return {
+        text: `Updated to ${to}. The build attestation could not be checked: ${why}. The download matched its published checksum. ${next}`,
+        code: EXIT.ok,
+        ok: true,
+      };
     }
     case "current": {
       const v = cleanVersion(o.version);

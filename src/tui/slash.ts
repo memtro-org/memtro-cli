@@ -27,7 +27,7 @@ export const SLASH_COMMANDS: { name: string; usage: string; summary: string }[] 
   { name: "logout", usage: "/logout", summary: "Revoke this computer's key, remove it, and leave" },
   { name: "update", usage: "/update", summary: "Update memtro to the latest release (it starts next time)" },
   { name: "whoami", usage: "/whoami", summary: "Who the key belongs to" },
-  { name: "quit", usage: "/quit", summary: "Leave (Ctrl-D does too)" },
+  { name: "quit", usage: "/quit", summary: "Leave (so do /exit and Ctrl-D)" },
 ];
 
 /** `/model x` → {name: "model", args: "x"}. Null for text that is not a slash command. */

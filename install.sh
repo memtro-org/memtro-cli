@@ -216,7 +216,7 @@ detect_platform() {
 		fi
 	fi
 	if [ "$os" = linux ] && is_musl; then
-		fail "this Linux uses musl libc (Alpine or similar); memtro's Linux build needs glibc for now. Use a glibc distribution, or install with npm (npm install -g @memtro/cli) where Node.js is available"
+		fail "this Linux uses musl libc (Alpine or similar); memtro's Linux build needs glibc for now. Use a glibc distribution, or build memtro from source with Node.js (https://github.com/memtro-org/memtro-cli#from-source)"
 	fi
 }
 
