@@ -88,9 +88,10 @@ jobs:
           node-version: 24
       - run: npm ci
       - run: npm run typecheck
-      - run: npm test
       - run: npm run bundle
       - run: npm run build:sea
+      # After the build, so the seam test runs `memtro update` as this platform's real executable.
+      - run: npm test
       # Values reach the shell through env, never by interpolation into the script.
       - name: The executable is for this runner's platform
         env:
