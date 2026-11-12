@@ -48,14 +48,32 @@ export class UnavailableError extends CliError {
   }
 }
 
-export const LOGIN_HINT = "Run `memtro login` to sign in again.";
+/** How a person gets a key: there is no login command, the first command that needs one signs in. */
+export const SIGN_IN_HINT = "Run `memtro` in a terminal to sign in again.";
 
-export function refusedKey(profile: string): AuthError {
-  return new AuthError(`Memtro refused the key for profile "${profile}": it has been revoked or has expired. ${LOGIN_HINT}`);
+/** What somebody typing the old login command is told (exit 2). */
+export const NO_LOGIN_COMMAND = "There is no login command: run `memtro` and it signs you in.";
+
+/** Memtro answered 401: the key is revoked or expired. Only this, never a network failure or a 5xx, is a refusal. */
+export class KeyRefusedError extends AuthError {
+  /** Where the refused key came from: MEMTRO_API_KEY is never replaced by signing in. */
+  readonly source: "env" | "stored";
+  constructor(message: string, source: "env" | "stored") {
+    super(message);
+    this.name = "KeyRefusedError";
+    this.source = source;
+  }
+}
+
+export function refusedKey(profile: string, source: "env" | "stored" = "stored"): KeyRefusedError {
+  if (source === "env") {
+    return new KeyRefusedError("Memtro refused the key in MEMTRO_API_KEY: it has been revoked or has expired. Set the variable to a valid key, or unset it to use this computer's stored key.", "env");
+  }
+  return new KeyRefusedError(`Memtro refused the key for profile "${profile}": it has been revoked or has expired. ${SIGN_IN_HINT}`, "stored");
 }
 
 export function notSignedIn(profile: string): AuthError {
-  return new AuthError(`Not signed in (profile "${profile}"). Run \`memtro login\`, or set MEMTRO_API_KEY.`);
+  return new AuthError(`Not signed in${profile === "default" ? "" : ` (profile "${profile}")`}. Run \`memtro\` in a terminal to sign in, or set MEMTRO_API_KEY.`);
 }
 
 export function errorText(err: unknown): string {

@@ -91,16 +91,21 @@ export function buildContext(input: Streams & { env: NodeJS.ProcessEnv; flags: F
         throw new UsageError(
           profileConfig.base_url
             ? `The key for profile "${resolved.profile}" was issued by ${profileConfig.base_url}; not sending it to ${resolved.baseUrl}. ` +
-                `Use another profile for that host (memtro login --profile <name> --base-url ${resolved.baseUrl}).`
-            : `This computer holds a key for profile "${resolved.profile}" but no record of which Memtro issued it, so it is not being sent anywhere. Run \`memtro login\` again.`,
+                `Use another profile for that host: \`memtro --profile <name> --base-url ${resolved.baseUrl}\` signs it in.`
+            : `This computer holds a key for profile "${resolved.profile}" but no record of which Memtro issued it, so it is not being sent anywhere. Run \`memtro logout\`, then \`memtro\` to sign in again.`,
         );
       }
       ctx.log(`profile ${resolved.profile}, ${resolved.baseUrl} (from ${resolved.baseUrlFrom}), key from ${cred.source === "env" ? "MEMTRO_API_KEY" : cred.source}`);
-      return new ApiClient({ baseUrl: resolved.baseUrl, key: cred.key, profile: resolved.profile, userAgent: ua, log: (l) => ctx.log(l) });
+      return new ApiClient({ baseUrl: resolved.baseUrl, key: cred.key, profile: resolved.profile, keySource: cred.source === "env" ? "env" : "stored", userAgent: ua, log: (l) => ctx.log(l) });
     },
     anonymousClient() {
       return new ApiClient({ baseUrl: resolved.baseUrl, key: null, profile: resolved.profile, userAgent: ua, log: (l) => ctx.log(l) });
     },
   };
   return ctx;
+}
+
+/** The same command's context, read again from disk: after a sign-in has written the profile and stored a key. */
+export function refreshContext(ctx: Context, flags: Flags = ctx.flags): Context {
+  return buildContext({ stdout: ctx.stdout, stderr: ctx.stderr, stdin: ctx.stdin, env: ctx.env, flags, positionals: ctx.positionals, cwd: ctx.cwd });
 }

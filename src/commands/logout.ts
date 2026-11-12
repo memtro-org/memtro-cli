@@ -44,7 +44,7 @@ export async function logout(ctx: Context): Promise<number> {
     }
   }
   if (ctx.config.profiles[profile]) {
-    // Keep the host, so `memtro login` next time goes back to the same place; drop who it was.
+    // Keep the host, so the next sign-in goes back to the same place; drop who it was.
     updateProfile(ctx.dir, profile, (p) => (p.base_url ? { base_url: p.base_url } : null));
   }
 

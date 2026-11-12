@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { parseCommandLine } from "../src/args.js";
 import { run } from "../src/cli.js";
-import { login } from "../src/commands/login.js";
+import { signIn as signInFlow } from "../src/auth/ensure.js";
 import { buildContext } from "../src/context.js";
 import { type CliError, EXIT } from "../src/errors.js";
 import { Capture, startFakePlatform, stdinFrom, type FakePlatform } from "./fake-platform.js";
@@ -16,6 +16,9 @@ after(() => fake.close());
 
 const freshEnv = (extra: Record<string, string> = {}): NodeJS.ProcessEnv => ({
   MEMTRO_CONFIG_DIR: mkdtempSync(join(tmpdir(), "memtro-cli-")),
+  // Sessions, history and the update cache go here, never under the real home directory.
+  XDG_STATE_HOME: mkdtempSync(join(tmpdir(), "memtro-cli-state-")),
+  MEMTRO_NO_UPDATE_CHECK: "1",
   MEMTRO_CREDENTIALS: "file",
   MEMTRO_BASE_URL: fake.base,
   NO_COLOR: "1",
@@ -29,23 +32,23 @@ async function cli(argv: string[], env: NodeJS.ProcessEnv, opts: { stdin?: strin
   return { code, out: stdout.text, err: stderr.text };
 }
 
-/** `memtro login`, with the "browser" being a fetch that follows the fake's approval redirect to the listener. */
-async function signIn(env: NodeJS.ProcessEnv, argv: string[] = ["login"]) {
+/** The sign-in flow (as /login runs it), with the "browser" a fetch that follows the fake's approval redirect to the listener. */
+async function signIn(env: NodeJS.ProcessEnv, argv: string[] = ["whoami"]) {
   const parsed = parseCommandLine(argv);
-  const stdout = new Capture();
+  const stdout = new Capture(true);
   const stderr = new Capture();
-  const ctx = buildContext({ stdout, stderr, stdin: stdinFrom(null), env, flags: parsed.flags, positionals: parsed.positionals });
+  const ctx = buildContext({ stdout, stderr, stdin: stdinFrom(null, true), env, flags: parsed.flags, positionals: parsed.positionals });
   let opened = "";
-  const code = await login(ctx, {
+  await signInFlow(ctx, { interactive: true, noBrowser: false }, {
     hostname: () => "test-host",
     platform: "darwin",
-    openBrowser: async (url) => {
+    openBrowser: async (url: string) => {
       opened = url;
       void fetch(url).catch(() => {});
       return true;
     },
   });
-  return { code, out: stdout.text, err: stderr.text, opened };
+  return { code: 0, out: stdout.text, err: stderr.text, opened };
 }
 
 test("exit 2 for usage, 0 for help and version, never touching the network", async () => {
@@ -55,7 +58,9 @@ test("exit 2 for usage, 0 for help and version, never touching the network", asy
   assert.equal((await cli([], env)).code, EXIT.usage);
   const help = await cli(["--help"], env);
   assert.equal(help.code, 0);
-  assert.match(help.out, /login\s+Sign in through the browser/);
+  assert.doesNotMatch(help.out, /^\s+login\s/m, "there is no login command");
+  assert.match(help.out, /update\s+Update memtro/);
+  assert.match(help.out, /--no-browser/);
   assert.match((await cli(["help", "call"], env)).out, /key:=json/);
   assert.match((await cli(["search", "--help"], env)).out, /--limit/);
   assert.match((await cli(["--version"], env)).out, /^\d+\.\d+\.\d+\n$/);
@@ -65,13 +70,13 @@ test("exit 2 for usage, 0 for help and version, never touching the network", asy
 test("exit 3 when not signed in, with the way out", async () => {
   const r = await cli(["whoami"], freshEnv());
   assert.equal(r.code, EXIT.auth);
-  assert.match(r.err, /Not signed in.*memtro login/);
+  assert.match(r.err, /Not signed in\. Run `memtro` in a terminal to sign in, or set MEMTRO_API_KEY\./);
 });
 
 test("exit 3 when Memtro refuses the key", async () => {
   const r = await cli(["search", "anything"], freshEnv({ MEMTRO_API_KEY: "sk-memtro-revokedrevokedrevoked" }));
   assert.equal(r.code, EXIT.auth);
-  assert.match(r.err, /revoked or has expired.*memtro login/);
+  assert.match(r.err, /refused the key in MEMTRO_API_KEY: it has been revoked or has expired/);
   assert.doesNotMatch(r.err, /revokedrevoked/, "the key is never echoed");
 });
 
@@ -81,7 +86,7 @@ test("exit 4 when Memtro cannot be reached", async () => {
   assert.match(r.err, /Could not reach Memtro/);
 });
 
-test("login → whoami → token → logout, end to end against the fake platform", async () => {
+test("sign-in → whoami → token → logout, end to end against the fake platform", async () => {
   const env = freshEnv();
   const signed = await signIn(env);
   assert.equal(signed.code, 0, signed.err);
@@ -89,7 +94,8 @@ test("login → whoami → token → logout, end to end against the fake platfor
   assert.equal(authorize.pathname, "/cli/authorize");
   assert.equal(authorize.searchParams.get("device"), "test-host");
   assert.match(authorize.searchParams.get("redirect_uri")!, /^http:\/\/127\.0\.0\.1:\d+\/callback$/);
-  assert.match(signed.out, /Signed in as Ada Lovelace <ada@example.com> in Analytical Engines; this key expires on .* \(in 90 days\)/);
+  assert.equal(signed.out, "", "every sign-in line goes to stderr");
+  assert.match(signed.err, /Signed in as Ada Lovelace <ada@example.com> in Analytical Engines; this key expires on .* \(in 90 days\)/);
   assert.ok(signed.err.includes(signed.opened), "the URL is always printed as well as opened");
   assert.doesNotMatch(signed.out + signed.err, /sk-memtro-/);
 
@@ -118,17 +124,17 @@ test("login → whoami → token → logout, end to end against the fake platfor
   assert.match((await cli(["logout"], env)).out, /Not signed in/);
 });
 
-test("login again revokes the key it replaces", async () => {
+test("signing in again revokes the key it replaces", async () => {
   const env = freshEnv();
   await signIn(env);
   const first = (await cli(["token"], env)).out.trim();
   const again = await signIn(env);
   assert.equal(again.code, 0, again.err);
-  assert.match(again.out, /held before has been revoked/);
+  assert.match(again.err, /held before has been revoked/);
   assert.equal(fake.keys.get(first)!.revoked, true);
 });
 
-test("login: cancelled in the browser is exit 1 and stores nothing", async () => {
+test("sign-in: cancelled in the browser is exit 1 and stores nothing", async () => {
   const env = freshEnv();
   fake.mode = "deny";
   try {

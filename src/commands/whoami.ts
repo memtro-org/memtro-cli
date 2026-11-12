@@ -7,7 +7,7 @@ interface WhoAmI {
   key: { id: string; name: string; prefix: string; expires_at: string | null; created_at: string };
 }
 
-/** `GET /api/cli/whoami`: asks Memtro rather than trusting what login wrote down, so a revoked key says so. */
+/** `GET /api/cli/whoami`: asks Memtro rather than trusting what the sign-in wrote down, so a revoked key says so. */
 export async function whoami(ctx: Context): Promise<number> {
   const client = await ctx.client();
   const cred = await ctx.credential();

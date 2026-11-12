@@ -4,7 +4,7 @@ import { CliError, refusedKey, UnavailableError } from "../errors.js";
  * Talking to Memtro, with the three outcomes kept apart that a person (and a script) needs kept apart:
  *
  *   could not reach Memtro      network failure, timeout, 502/503/504      → UnavailableError (exit 4)
- *   Memtro said no              401 → "run memtro login" (exit 3); other 4xx/5xx → its own message (exit 1)
+ *   Memtro said no              401 → the key was refused (exit 3); other 4xx/5xx → its own message (exit 1)
  *   nothing found               a 200 with nothing in it — the command says so, and exits 0
  *
  * The key goes in the Authorization header and nowhere else. `--verbose` logs method, path, status and time,
@@ -15,6 +15,8 @@ export interface ClientOptions {
   baseUrl: string;
   key: string | null;
   profile: string;
+  /** Where the key came from, so a refusal says which key: MEMTRO_API_KEY is never replaced by signing in. */
+  keySource?: "env" | "stored";
   userAgent: string;
   /** Called with one line per request when --verbose is on. */
   log?: (line: string) => void;
@@ -82,15 +84,77 @@ export class ApiClient {
   async errorFor(res: Response): Promise<CliError> {
     const text = await res.text().catch(() => "");
     const said = serverMessage(text);
+    const { type, code } = serverCode(text);
     const requestId = res.headers.get("x-request-id");
     const ref = requestId ? ` (request ${requestId})` : "";
-    if (res.status === 401) return refusedKey(this.opts.profile);
+    const colon = said ? `: ${said}` : "";
+    if (res.status === 401) return refusedKey(this.opts.profile, this.opts.keySource ?? "stored");
     if (res.status === 502 || res.status === 503 || res.status === 504) {
-      return new UnavailableError(`Memtro is unavailable right now (HTTP ${res.status})${said ? `: ${said}` : ""}${ref}. Try again shortly.`);
+      return new UnavailableError(`Memtro is unavailable right now (HTTP ${res.status})${colon}${ref}. Try again shortly.`);
+    }
+    // brain auth/principal.ts BillingError: the organisation has no usable subscription. Retrying cannot help.
+    if (res.status === 402) {
+      return new PlatformError(`Your organisation's Memtro subscription is not active (HTTP 402)${colon}${ref}. An administrator can renew it in the Memtro dashboard.`, { status: 402, code: code ?? "subscription_inactive" });
+    }
+    if (res.status === 429) {
+      // brain cost/plan.ts AllowanceExhausted (and the run-hold refusal): a quota, not a rate. Retrying cannot help.
+      if (type === "insufficient_quota" || code === "allowance_exhausted") {
+        return new PlatformError(`Memtro's usage allowance does not cover this request (HTTP 429${code ? `, ${code}` : ""})${colon}${ref}. Ask an administrator of your organisation to raise the allowance, or try again when it resets.`, { status: 429, code: code ?? type });
+      }
+      // nginx's limit_req (deploy/nginx.conf), with a non-JSON body: a plain rate limit, which clears by itself.
+      return new PlatformError(`Memtro is limiting how fast requests arrive (HTTP 429)${ref}. Wait a moment and try again.`, { status: 429, code, retryable: true, retryAfterMs: retryAfter(res.headers.get("retry-after")) });
+    }
+    if (res.status === 400 && code === "provider_not_configured") {
+      return new PlatformError(`Your organisation has no provider key for that model (HTTP 400)${colon}${ref}. Pick another model (\`/model\` or \`--model\`), or ask an administrator to add the key under Providers in the dashboard.`, { status: 400, code });
+    }
+    if ((res.status === 400 || res.status === 404) && code === "model_not_found") {
+      return new PlatformError(`Memtro does not know that model (HTTP ${res.status})${colon}${ref}. \`/model\` lists the ones your account can use.`, { status: res.status, code });
     }
     if (res.status === 404 && !said) return new CliError(`${this.opts.baseUrl} has no such endpoint (404). Check the base URL, or update the CLI.${ref}`);
-    return new CliError(`Memtro said no (HTTP ${res.status})${said ? `: ${said}` : ""}${ref}`);
+    // A 500 is the platform or its provider failing on this attempt; another attempt may well succeed.
+    if (res.status >= 500) return new PlatformError(`Memtro failed to answer (HTTP ${res.status})${colon}${ref}`, { status: res.status, code, retryable: true });
+    return new PlatformError(`Memtro said no (HTTP ${res.status})${colon}${ref}`, { status: res.status, code });
   }
+}
+
+/**
+ * Memtro refused or failed, with the status and the platform's error code kept so a caller can decide whether
+ * trying again could help. A `CliError` (exit 1), so commands that only print it need nothing new.
+ */
+export class PlatformError extends CliError {
+  readonly status: number;
+  readonly code: string | null;
+  /** True only where waiting and asking again can succeed: a plain rate limit or a 5xx. Never a quota. */
+  readonly retryable: boolean;
+  /** From a `Retry-After` header, when there was one. */
+  readonly retryAfterMs: number | null;
+  constructor(message: string, o: { status: number; code?: string | null; retryable?: boolean; retryAfterMs?: number | null }) {
+    super(message);
+    this.name = "PlatformError";
+    this.status = o.status;
+    this.code = o.code ?? null;
+    this.retryable = o.retryable ?? false;
+    this.retryAfterMs = o.retryAfterMs ?? null;
+  }
+}
+
+/** `error.type` and `error.code` from OpenAI's error shape, when the body is that. */
+export function serverCode(text: string): { type: string | null; code: string | null } {
+  try {
+    const body = JSON.parse(text) as { error?: { type?: unknown; code?: unknown } };
+    const e = body.error && typeof body.error === "object" ? body.error : {};
+    return { type: typeof e.type === "string" ? e.type : null, code: typeof e.code === "string" ? e.code : null };
+  } catch {
+    return { type: null, code: null };
+  }
+}
+
+/** `Retry-After` as seconds or an HTTP date, in milliseconds; null when absent or unreadable. */
+export function retryAfter(value: string | null, now = Date.now()): number | null {
+  if (!value) return null;
+  if (/^\s*\d+\s*$/.test(value)) return Number(value) * 1000;
+  const at = Date.parse(value);
+  return Number.isNaN(at) ? null : Math.max(0, at - now);
 }
 
 /** The message from any of the error shapes Memtro uses: OpenAI's, JSON-RPC's, or a bare `{ error: "…" }`. */

@@ -1,29 +1,98 @@
 import { hostname } from "node:os";
 import { createInterface } from "node:readline";
 import { ApiClient } from "../api/client.js";
-import { buildAuthorizeUrl, cleanPastedCode, deviceLabel, MANUAL, wantsManual } from "../auth/authorize.js";
-import { openBrowser } from "../auth/browser.js";
-import { startLoopback } from "../auth/loopback.js";
-import { newPkce } from "../auth/pkce.js";
-import { exchangeCode, type TokenResponse } from "../auth/token.js";
 import { bool } from "../args.js";
 import { updateProfile, type StoreKind } from "../config.js";
-import type { Context } from "../context.js";
-import { CliError, errorText, UsageError } from "../errors.js";
-import { humanDate, relativeDays, writeJson } from "../output.js";
+import { refreshContext, type Context } from "../context.js";
+import { AuthError, CliError, errorText, KeyRefusedError, notSignedIn, UsageError } from "../errors.js";
+import { humanDate, relativeDays } from "../output.js";
 import { openStore, preferredKind, type CredentialStore } from "../store/index.js";
 import { userAgent } from "../version.js";
+import { buildAuthorizeUrl, cleanPastedCode, deviceLabel, MANUAL, wantsManual } from "./authorize.js";
+import { openBrowser } from "./browser.js";
+import { startLoopback } from "./loopback.js";
+import { newPkce } from "./pkce.js";
+import { exchangeCode, type TokenResponse } from "./token.js";
 
-export const LOGIN_TIMEOUT_MS = 5 * 60_000;
+/**
+ * Signing in, on first use. There is no login command: a command that needs a key and finds none signs in through
+ * the browser when a person is there to approve it, and says how to sign in when nobody is.
+ *
+ * The flow is the contract's authorization-code + PKCE: a listener on 127.0.0.1, the browser sent to
+ * `/cli/authorize`, the code it comes back with exchanged at `/api/cli/token`. `--no-browser` (or SSH, or a Linux
+ * session with no display) uses `redirect_uri=manual` instead: the page shows the code and the person pastes it.
+ * Every line it prints goes to stderr, so a command's stdout (`--json`) stays clean.
+ */
 
-export interface LoginDeps {
+export const SIGN_IN_TIMEOUT_MS = 5 * 60_000;
+
+export interface SignInDeps {
   openBrowser: (url: string) => Promise<boolean>;
   hostname: () => string;
   platform: NodeJS.Platform;
   timeoutMs: number;
 }
 
-const defaultDeps: LoginDeps = { openBrowser, hostname, platform: process.platform, timeoutMs: LOGIN_TIMEOUT_MS };
+const defaultDeps: SignInDeps = { openBrowser, hostname, platform: process.platform, timeoutMs: SIGN_IN_TIMEOUT_MS };
+
+export interface SignInOptions {
+  /** A person is at the terminal: stdin and stdout are terminals and CI is not set. */
+  interactive: boolean;
+  /** `--no-browser`: print the address and read a pasted code. */
+  noBrowser: boolean;
+}
+
+/** Whether a person can be expected to answer: stdin and stdout are terminals, and this is not CI. */
+export function isInteractive(io: { stdin: { isTTY?: boolean }; stdout: { isTTY?: boolean }; env: NodeJS.ProcessEnv }): boolean {
+  return Boolean(io.stdin.isTTY) && Boolean(io.stdout.isTTY) && !io.env.CI;
+}
+
+/** The options a command's context implies. */
+export function signInOptions(ctx: Context): SignInOptions {
+  return { interactive: isInteractive(ctx), noBrowser: bool(ctx.flags["no-browser"]) };
+}
+
+/**
+ * Returns a usable signed-in context, signing in through the browser first when there is no key and a person is
+ * there. A key from MEMTRO_API_KEY or the store is returned as it is: no request is made just to check it.
+ */
+export async function ensureSignedIn(ctx: Context, opts: SignInOptions, deps: Partial<SignInDeps> = {}): Promise<Context> {
+  if (await ctx.credential()) return ctx;
+  if (!opts.interactive) throw notSignedIn(ctx.resolved.profile);
+  await signIn(ctx, opts, deps);
+  return refreshContext(ctx);
+}
+
+/**
+ * Starts something that needs the key (a session), signing in first if there is none, and once more if Memtro
+ * refuses the stored key while a person is there. Never a loop: a refusal straight after a sign-in is an error.
+ * A key from MEMTRO_API_KEY is never replaced: its refusal is the error it already is (exit 3).
+ */
+export async function startSignedIn<T>(ctx: Context, opts: SignInOptions, start: (ctx: Context) => Promise<T>, deps: Partial<SignInDeps> = {}): Promise<{ ctx: Context; value: T }> {
+  const hadKey = Boolean(await ctx.credential());
+  let current = await ensureSignedIn(ctx, opts, deps);
+  try {
+    return { ctx: current, value: await start(current) };
+  } catch (err) {
+    if (!(err instanceof KeyRefusedError) || err.source === "env" || !opts.interactive) throw err;
+    if (!hadKey) throw refusedAfterSignIn(current);
+    current.stderr.write(`${current.err.yellow(`Memtro refused the stored key for profile "${current.resolved.profile}": it has been revoked or has expired. Signing in again.`)}\n`);
+  }
+  await signIn(current, opts, deps);
+  current = refreshContext(current);
+  try {
+    return { ctx: current, value: await start(current) };
+  } catch (err) {
+    if (err instanceof KeyRefusedError && err.source !== "env") throw refusedAfterSignIn(current);
+    throw err;
+  }
+}
+
+function refusedAfterSignIn(ctx: Context): AuthError {
+  return new AuthError(
+    `Memtro refused the key it has just issued for profile "${ctx.resolved.profile}". Not signing in again: check the organisation's access in the Memtro dashboard, or ask an administrator.`,
+  );
+}
 
 interface Saved {
   tokens: TokenResponse;
@@ -33,36 +102,36 @@ interface Saved {
 }
 
 /**
- * `memtro login`: the contract's authorization-code + PKCE flow.
+ * The sign-in itself, whether or not a key is held (`/login` signs in again, perhaps as somebody else).
  *
- * Loopback by default: a listener on 127.0.0.1, the browser sent to `/cli/authorize`, the code it comes back
- * with exchanged at `/api/cli/token`. `--no-browser` (or SSH, or a Linux session with no display) uses
- * `redirect_uri=manual` instead: the page shows the code and the person pastes it here.
- *
- * Nothing is stored until the exchange has succeeded. The address is printed as well as opened, every time:
- * an `open` that "succeeded" into a browser on another desktop is not something this process can see.
+ * Nothing is stored until the exchange has succeeded. Where it signs in to and the address are printed before
+ * the browser is asked to open, every time: an `open` that "succeeded" into a browser on another desktop is not
+ * something this process can see, and nobody should be sent to a sign-in page without being told whose.
  */
-export async function login(ctx: Context, deps: Partial<LoginDeps> = {}): Promise<number> {
+export async function signIn(ctx: Context, opts: SignInOptions, deps: Partial<SignInDeps> = {}): Promise<TokenResponse> {
   const d = { ...defaultDeps, ...deps };
   const base = ctx.resolved.baseUrl;
   const profile = ctx.resolved.profile;
   const say = (line = "") => ctx.stderr.write(`${line}\n`);
+  if (!opts.interactive) throw notSignedIn(profile);
 
   if (ctx.env.MEMTRO_API_KEY) {
-    say(ctx.err.yellow("Note: MEMTRO_API_KEY is set, and it takes precedence over the key stored by this login until you unset it."));
+    say(ctx.err.yellow("Note: MEMTRO_API_KEY is set, and it takes precedence over the key stored by this sign-in until you unset it."));
   }
 
   const pkce = newPkce();
   const device = deviceLabel(d.hostname()) || undefined;
-  const manual = wantsManual({ noBrowser: bool(ctx.flags["no-browser"]), env: ctx.env, platform: d.platform, stdinIsTTY: Boolean(ctx.stdin.isTTY) });
+  const manual = wantsManual({ noBrowser: opts.noBrowser, env: ctx.env, platform: d.platform, stdinIsTTY: Boolean(ctx.stdin.isTTY) });
+  const minutes = Math.round(d.timeoutMs / 60_000);
+  const where = `${base}${profile === "default" ? "" : ` (profile ${profile})`}`;
 
   let saved: Saved;
   if (manual) {
     const url = buildAuthorizeUrl(base, { challenge: pkce.challenge, redirectUri: MANUAL, state: pkce.state, device });
-    say(`Open this address in a browser, on this computer or any other, and approve the sign-in:\n\n  ${url}\n`);
+    say(`Signing in to ${where}. Open this address in a browser, on this computer or any other, and approve the sign-in:\n\n  ${url}\n`);
     const pasted = await readLine(ctx, "Then paste the code it shows here: ", d.timeoutMs);
     const code = cleanPastedCode(pasted);
-    if (!code) throw new UsageError("That does not look like a sign-in code. Run `memtro login --no-browser` again and paste the code exactly as shown.");
+    if (!code) throw new UsageError("That does not look like a sign-in code. Try again, and paste the code exactly as shown.");
     saved = await save(ctx, await exchangeCode(base, { code, codeVerifier: pkce.verifier, redirectUri: MANUAL }, { userAgent: userAgent() }));
   } else {
     let redirectUri = "";
@@ -77,10 +146,11 @@ export async function login(ctx: Context, deps: Partial<LoginDeps> = {}): Promis
     // Everything after the listener starts is inside the try, so nothing can leave it listening.
     try {
       const url = buildAuthorizeUrl(base, { challenge: pkce.challenge, redirectUri, state: pkce.state, device });
-      const opened = await d.openBrowser(url);
-      say(opened ? "Opening your browser to approve this sign-in. If it does not open, visit:" : "Could not open a browser. Visit this address to approve the sign-in:");
+      say(`Signing in to ${where}: opening your browser to approve it. If it does not open, visit:`);
       say(`\n  ${url}\n`);
-      say(ctx.err.dim(`Waiting for the browser (up to ${Math.round(d.timeoutMs / 60_000)} minutes; Ctrl-C to cancel)…`));
+      const opened = await d.openBrowser(url);
+      if (!opened) say("Could not open a browser: visit the address above to approve the sign-in.");
+      say(ctx.err.dim(`Waiting for the browser (up to ${minutes} minutes; Ctrl-C to cancel)…`));
       const result = await loop.result;
       switch (result.kind) {
         case "done":
@@ -89,7 +159,7 @@ export async function login(ctx: Context, deps: Partial<LoginDeps> = {}): Promis
         case "denied":
           throw new CliError("Sign-in was cancelled in the browser. Nothing was stored.");
         case "timeout":
-          throw new CliError(`Nobody approved the sign-in within ${Math.round(d.timeoutMs / 60_000)} minutes. Run \`memtro login\` again (or \`memtro login --no-browser\` to paste a code instead).`);
+          throw new CliError(`Nobody approved the sign-in within ${minutes} minutes. Nothing was stored; run the command again to retry (add --no-browser to paste a code instead).`);
         case "aborted":
           throw new CliError("Sign-in cancelled. Nothing was stored.");
         case "error":
@@ -103,24 +173,12 @@ export async function login(ctx: Context, deps: Partial<LoginDeps> = {}): Promis
 
   const { tokens } = saved;
   for (const note of saved.notes) say(ctx.err.yellow(note));
-  if (ctx.json) {
-    writeJson(ctx.stdout, {
-      profile,
-      base_url: base,
-      user: tokens.user,
-      organisation: tokens.organisation,
-      key: { id: tokens.key_id, expires_at: tokens.expires_at },
-      stored_in: saved.store.kind,
-      previous_key: saved.replaced,
-    });
-    return 0;
-  }
   const who = tokens.user.name && tokens.user.email ? `${tokens.user.name} <${tokens.user.email}>` : tokens.user.email ?? tokens.user.name ?? tokens.user.id;
   // The key is the organisation's, held by this person: it reads and writes that organisation's memory as them.
-  ctx.stdout.write(`${ctx.out.green("Signed in")} as ${ctx.out.bold(who)} in ${ctx.out.bold(tokens.organisation.name ?? tokens.organisation.id)}${profile === "default" ? "" : ` (profile ${profile})`}; ${keyExpiry(tokens.expires_at)}.\n`);
-  ctx.stdout.write(`It acts as you in that organisation, and is stored in ${saved.store.where}.\n`);
-  if (saved.replaced === "revoked") ctx.stdout.write("The key this profile held before has been revoked.\n");
-  return 0;
+  say(`${ctx.err.green("Signed in")} as ${ctx.err.bold(who)} in ${ctx.err.bold(tokens.organisation.name ?? tokens.organisation.id)}${profile === "default" ? "" : ` (profile ${profile})`}; ${keyExpiry(tokens.expires_at)}.`);
+  say(`It acts as you in that organisation, and is stored in ${saved.store.where}.`);
+  if (saved.replaced === "revoked") say("The key this profile held before has been revoked.");
+  return tokens;
 }
 
 /**
@@ -194,7 +252,7 @@ function readLine(ctx: Context, prompt: string, timeoutMs: number): Promise<stri
     const rl = createInterface({ input: ctx.stdin, output: ctx.stderr, terminal: Boolean(ctx.stdin.isTTY) });
     const timer = setTimeout(() => {
       rl.close();
-      reject(new CliError(`No code was pasted within ${Math.round(timeoutMs / 60_000)} minutes. Run \`memtro login\` again.`));
+      reject(new CliError(`No code was pasted within ${Math.round(timeoutMs / 60_000)} minutes. Nothing was stored; run the command again to retry.`));
     }, timeoutMs);
     let answered = false;
     rl.on("SIGINT", () => {

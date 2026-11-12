@@ -26,6 +26,8 @@ export interface McpTool {
   name: string;
   description?: string;
   inputSchema?: Record<string, unknown>;
+  /** MCP tool annotations, when a server sends them (Memtro's does not today). */
+  annotations?: { readOnlyHint?: boolean; destructiveHint?: boolean; [k: string]: unknown };
 }
 
 export interface McpContent {
@@ -47,17 +49,64 @@ interface JsonRpcResponse {
   error?: { code: number; message: string; data?: unknown };
 }
 
-/** `?tools=memory` skips building every connector's tools on the server for calls that only need Memtro's own. */
-export type Surface = "all" | "memory";
+/**
+ * Which tools the endpoint serves, as its query string (brain src/lib/tools/selection.ts). An address can only
+ * narrow what the key already allows.
+ *
+ *   tools: "memory"         the `memtro_*` tools alone; skips building every connector's tools on the server
+ *   actions: false          `?actions=none`: nothing that changes anything (a connected system, memory, the registers)
+ *   shape: "system"         one tool per connected system taking `{operation, input}` (the server's default)
+ *   shape: "operation"      one tool per operation under its real name
+ *   connectors: [...]       only these connector kinds
+ *
+ * `"all"` and `"memory"` are the two spellings the original commands use, kept as they were.
+ */
+export interface SurfaceOptions {
+  tools?: "all" | "memory";
+  actions?: boolean;
+  shape?: "system" | "operation";
+  connectors?: string[];
+}
 
-export async function rpc<T>(client: ApiClient, method: string, params: Record<string, unknown>, surface: Surface = "all"): Promise<T> {
+export type Surface = "all" | "memory" | SurfaceOptions;
+
+/** The query string for a surface; undefined when it is the server's default. Pure. */
+export function surfaceQuery(surface: Surface): Record<string, string> | undefined {
+  const o: SurfaceOptions = typeof surface === "string" ? { tools: surface } : surface;
+  const q: Record<string, string> = {};
+  if (o.tools === "memory") q.tools = "memory";
+  if (o.actions === false) q.actions = "none";
+  if (o.shape) q.shape = o.shape;
+  if (o.connectors?.length) q.connectors = o.connectors.join(",");
+  return Object.keys(q).length ? q : undefined;
+}
+
+export interface RpcOptions {
+  /** Aborts the request (an interrupted turn). The usual timeout still applies alongside it. */
+  signal?: AbortSignal;
+}
+
+function withTimeout(signal: AbortSignal | undefined, ms: number): AbortSignal {
+  const timeout = AbortSignal.timeout(ms);
+  if (!signal) return timeout;
+  if (typeof AbortSignal.any === "function") return AbortSignal.any([signal, timeout]);
+  const both = new AbortController();
+  const abort = (s: AbortSignal) => () => both.abort(s.reason);
+  if (signal.aborted) both.abort(signal.reason);
+  signal.addEventListener("abort", abort(signal), { once: true });
+  timeout.addEventListener("abort", abort(timeout), { once: true });
+  return both.signal;
+}
+
+export async function rpc<T>(client: ApiClient, method: string, params: Record<string, unknown>, surface: Surface = "all", opts: RpcOptions = {}): Promise<T> {
   const id = randomUUID();
   const res = await client.fetch("/api/mcp", {
     method: "POST",
-    query: surface === "memory" ? { tools: "memory" } : undefined,
+    query: surfaceQuery(surface),
     body: { jsonrpc: "2.0", id, method, params },
     headers: { Accept: "application/json, text/event-stream", "MCP-Protocol-Version": PROTOCOL_VERSION },
     timeoutMs: MCP_TIMEOUT_MS,
+    ...(opts.signal ? { signal: withTimeout(opts.signal, MCP_TIMEOUT_MS) } : {}),
   });
   const text = await res.text();
   const message = parseRpcBody(text, res.headers.get("content-type") ?? "", id);
@@ -91,12 +140,12 @@ export function parseRpcBody(text: string, contentType: string, id: string): Jso
   return messages.find((m) => m.id === id) ?? messages.find((m) => m.error && m.id === null) ?? null;
 }
 
-export async function listTools(client: ApiClient, surface: Surface = "all"): Promise<McpTool[]> {
+export async function listTools(client: ApiClient, surface: Surface = "all", opts: RpcOptions = {}): Promise<McpTool[]> {
   const tools: McpTool[] = [];
   let cursor: string | undefined;
   // Bounded: a server that kept handing back cursors would otherwise keep this running for ever.
   for (let page = 0; page < 50; page++) {
-    const result = await rpc<{ tools?: McpTool[]; nextCursor?: string }>(client, "tools/list", cursor ? { cursor } : {}, surface);
+    const result = await rpc<{ tools?: McpTool[]; nextCursor?: string }>(client, "tools/list", cursor ? { cursor } : {}, surface, opts);
     tools.push(...(result.tools ?? []));
     if (!result.nextCursor) break;
     cursor = result.nextCursor;
@@ -104,8 +153,8 @@ export async function listTools(client: ApiClient, surface: Surface = "all"): Pr
   return tools;
 }
 
-export async function callTool(client: ApiClient, name: string, args: Record<string, unknown>, surface: Surface = "all"): Promise<McpCallResult> {
-  const result = await rpc<{ content?: McpContent[]; isError?: boolean; structuredContent?: unknown }>(client, "tools/call", { name, arguments: args }, surface);
+export async function callTool(client: ApiClient, name: string, args: Record<string, unknown>, surface: Surface = "all", opts: RpcOptions = {}): Promise<McpCallResult> {
+  const result = await rpc<{ content?: McpContent[]; isError?: boolean; structuredContent?: unknown }>(client, "tools/call", { name, arguments: args }, surface, opts);
   return {
     content: Array.isArray(result.content) ? result.content : [],
     isError: Boolean(result.isError),

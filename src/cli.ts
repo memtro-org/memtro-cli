@@ -1,24 +1,36 @@
-#!/usr/bin/env node
-import { realpathSync } from "node:fs";
-import { fileURLToPath } from "node:url";
-import { bool, parseCommandLine } from "./args.js";
-import { ask } from "./commands/ask.js";
+import { bool, parseCommandLine, str } from "./args.js";
+import { ensureSignedIn, signInOptions, type SignInDeps } from "./auth/ensure.js";
+import { ask, stdinWasRedirected } from "./commands/ask.js";
+import { chat } from "./commands/chat.js";
 import { commandHelp, mainHelp } from "./commands/help.js";
-import { login } from "./commands/login.js";
 import { logout } from "./commands/logout.js";
 import { remember } from "./commands/remember.js";
+import { run as runTask } from "./commands/run.js";
 import { search } from "./commands/search.js";
 import { call, tools } from "./commands/tools.js";
 import { token } from "./commands/token.js";
+import { update, type UpdateApi } from "./commands/update.js";
 import { whoami } from "./commands/whoami.js";
 import { why } from "./commands/why.js";
 import { buildContext, type Context } from "./context.js";
-import { CliError, EXIT } from "./errors.js";
+import { CliError, EXIT, UsageError } from "./errors.js";
 import { colourAllowed, paint, type Streams } from "./output.js";
 import { VERSION } from "./version.js";
 
-const HANDLERS: Record<string, (ctx: Context) => Promise<number>> = {
-  login: (ctx) => login(ctx),
+/** What tests hand in instead of a real browser and a real update. */
+export interface RunDeps {
+  signIn?: Partial<SignInDeps>;
+  update?: UpdateApi;
+}
+
+/**
+ * Commands that need a key sign in first when there is none and a person is there (`ensureSignedIn`). `token`,
+ * `logout` and `update` never do: printing, removing or updating has no business opening a browser. `run` and
+ * the interactive session sign in at their own start, where a refused stored key can be replaced once.
+ */
+const SIGNS_IN = new Set(["whoami", "ask", "search", "remember", "why", "tools", "call"]);
+
+const HANDLERS: Record<string, (ctx: Context, deps: RunDeps) => Promise<number>> = {
   logout,
   whoami,
   ask,
@@ -28,20 +40,24 @@ const HANDLERS: Record<string, (ctx: Context) => Promise<number>> = {
   tools,
   call,
   token,
+  update: (ctx, deps) => update(ctx, deps.update),
+  run: (ctx, deps) => runTask(ctx, {}, undefined, deps.signIn),
 };
 
 export interface RunInput extends Streams {
   argv: readonly string[];
   env: NodeJS.ProcessEnv;
   cwd?: string;
+  deps?: RunDeps;
 }
 
 /**
  * The whole program, as a function of its arguments, environment and streams, returning the exit code. `main`
- * below is the only part that touches `process`; tests call this.
+ * in main.ts is the only part that touches `process`; tests call this.
  */
 export async function run(input: RunInput): Promise<number> {
   const errPaint = paint(colourAllowed(input.stderr, input.env));
+  const deps = input.deps ?? {};
   try {
     const parsed = parseCommandLine(input.argv);
     if (parsed.command === null) {
@@ -49,9 +65,21 @@ export async function run(input: RunInput): Promise<number> {
         input.stdout.write(`${VERSION}\n`);
         return EXIT.ok;
       }
-      input.stdout.write(mainHelp());
-      // Bare `memtro` is a request for help that was not phrased as one: show it, and say it was not a command.
-      return bool(parsed.flags.help) ? EXIT.ok : EXIT.usage;
+      if (bool(parsed.flags.help)) {
+        input.stdout.write(mainHelp());
+        return EXIT.ok;
+      }
+      const ctx = () => buildContext({ stdout: input.stdout, stderr: input.stderr, stdin: input.stdin, env: input.env, flags: parsed.flags, positionals: [], cwd: input.cwd });
+      // `memtro -p "<task>"`: headless, as `memtro run`.
+      const prompt = str(parsed.flags.prompt);
+      if (prompt !== undefined) return await runTask(ctx(), {}, prompt, deps.signIn);
+      // A person at a terminal: the interactive session.
+      if (input.stdin.isTTY && input.stdout.isTTY) return await chat(ctx(), deps);
+      // A task piped in: headless.
+      if (stdinWasRedirected(input.stdin)) return await runTask(ctx(), {}, undefined, deps.signIn);
+      // No terminal and no task: there is nothing to do; show what there is.
+      input.stderr.write(mainHelp());
+      throw new UsageError('No task and no terminal: give one with memtro run "<task>", or pipe it in.');
     }
     if (parsed.command === "help") {
       input.stdout.write(parsed.positionals[0] ? commandHelp(parsed.positionals[0]) : mainHelp());
@@ -65,8 +93,9 @@ export async function run(input: RunInput): Promise<number> {
       input.stdout.write(`${VERSION}\n`);
       return EXIT.ok;
     }
-    const ctx = buildContext({ stdout: input.stdout, stderr: input.stderr, stdin: input.stdin, env: input.env, flags: parsed.flags, positionals: parsed.positionals, cwd: input.cwd });
-    return await HANDLERS[parsed.command]!(ctx);
+    let ctx = buildContext({ stdout: input.stdout, stderr: input.stderr, stdin: input.stdin, env: input.env, flags: parsed.flags, positionals: parsed.positionals, cwd: input.cwd });
+    if (SIGNS_IN.has(parsed.command)) ctx = await ensureSignedIn(ctx, signInOptions(ctx), deps.signIn);
+    return await HANDLERS[parsed.command]!(ctx, deps);
   } catch (err) {
     if (err instanceof CliError) {
       input.stderr.write(`${errPaint.red("memtro:")} ${err.message}\n`);
@@ -78,23 +107,3 @@ export async function run(input: RunInput): Promise<number> {
     return EXIT.failure;
   }
 }
-
-async function main(): Promise<void> {
-  // A closed pipe (`memtro search x | head -1`) is the reader's choice, not an error worth a stack trace.
-  process.stdout.on("error", (err: NodeJS.ErrnoException) => {
-    if (err.code === "EPIPE") process.exit(0);
-  });
-  const code = await run({ argv: process.argv.slice(2), env: process.env, stdout: process.stdout, stderr: process.stderr, stdin: process.stdin });
-  // exitCode rather than exit(): exit() can cut off output still queued for a pipe on macOS.
-  process.exitCode = code;
-}
-
-const invokedDirectly = (() => {
-  try {
-    return Boolean(process.argv[1]) && realpathSync(process.argv[1]!) === realpathSync(fileURLToPath(import.meta.url));
-  } catch {
-    return false;
-  }
-})();
-
-if (invokedDirectly) void main();

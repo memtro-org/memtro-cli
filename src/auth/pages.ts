@@ -18,17 +18,17 @@ const COPY: Record<PageKind, { title: string; heading: string; body: string }> =
   cancelled: {
     title: "Memtro CLI: cancelled",
     heading: "Sign-in cancelled",
-    body: "Nothing was issued. You can close this tab; run memtro login again whenever you are ready.",
+    body: "Nothing was issued. You can close this tab; run memtro again whenever you are ready to sign in.",
   },
   failed: {
     title: "Memtro CLI: sign-in failed",
     heading: "Sign-in did not complete",
-    body: "The terminal says what went wrong. You can close this tab and run memtro login again.",
+    body: "The terminal says what went wrong. You can close this tab and try again from the terminal.",
   },
   "not-found": {
     title: "Not found",
     heading: "Nothing here",
-    body: "This address belongs to a memtro login that is waiting for one specific redirect.",
+    body: "This address belongs to a memtro sign-in that is waiting for one specific redirect.",
   },
 };
 

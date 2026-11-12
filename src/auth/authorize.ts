@@ -49,6 +49,7 @@ export function wantsManual(input: { noBrowser: boolean; env: NodeJS.ProcessEnv;
 
 /** A pasted code: trimmed, base64url only. The contract's codes are 43 characters; a little latitude either side. */
 export function cleanPastedCode(raw: string): string | null {
-  const code = raw.trim();
+  // Pasted inside a session, the terminal has bracketed paste on and wraps the code in ESC[200~ … ESC[201~.
+  const code = raw.replace(/\u001b\[20[01]~/g, "").trim();
   return /^[A-Za-z0-9_-]{16,256}$/.test(code) ? code : null;
 }

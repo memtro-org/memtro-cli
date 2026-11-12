@@ -42,13 +42,13 @@ export function fileStore(dir: string, platform: NodeJS.Platform = process.platf
       throw err;
     }
     if (checkMode && tooOpen(mode)) {
-      throw new Error(`${path} can be read by other users (mode ${(mode & 0o777).toString(8)}), so it is not being used. Run \`chmod 600 ${path}\`, and consider the key in it exposed: \`memtro logout\` then \`memtro login\` replaces it.`);
+      throw new Error(`${path} can be read by other users (mode ${(mode & 0o777).toString(8)}), so it is not being used. Run \`chmod 600 ${path}\`, and consider the key in it exposed: \`memtro logout\` then \`memtro\` signs in with a new one.`);
     }
     try {
       const parsed = JSON.parse(readFileSync(path, "utf8")) as Partial<CredentialsFile>;
       return { version: 1, keys: parsed.keys && typeof parsed.keys === "object" ? parsed.keys : {} };
     } catch {
-      throw new Error(`${path} is not valid JSON. Delete it and run \`memtro login\`.`);
+      throw new Error(`${path} is not valid JSON. Delete it and run \`memtro\` to sign in again.`);
     }
   };
 

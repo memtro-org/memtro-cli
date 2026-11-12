@@ -31,16 +31,97 @@ export interface FakePlatform {
   keys: Map<string, { revoked: boolean; id: string }>;
   /** Mint a live key directly, as if a person had made one in the dashboard. */
   mintKey(): string;
+  /**
+   * Replies for `POST /v1/chat/completions`, taken one per request, oldest first. While it is empty the endpoint
+   * answers as it always has (the `ask` tests' canned stream).
+   */
+  chatScript: ScriptedReply[];
+  /** Rows for `GET /v1/models`; 404 while null. */
+  models: unknown[] | null;
   close(): Promise<void>;
 }
 
 const b64url = (b: Buffer) => b.toString("base64url");
 
+/** One piece of a scripted stream, written as the platform would (brain compat.ts `openAIStreamResponse`). */
+export type StreamPart =
+  | { text: string }
+  | { thinking: string }
+  | { toolCall: { id: string; name: string; arguments: string } }
+  /** The first chunk's `memtro.routing`, with the chunk's `model` set to `model`. */
+  | { routing: { model: string; detail: Record<string, unknown> } }
+  /** The closing `memtro` chunk naming a fallback that answered. */
+  | { answeredBy: string }
+  | { finish: "stop" | "length" | "tool_calls" | "content_filter" }
+  | { usage: { input: number; output: number; cached?: number } }
+  /** `data: {"error": …}`, after which the platform closes the stream with no [DONE]. */
+  | { error: string }
+  /** Stop writing and hold the connection open until the client goes away. */
+  | { hang: true };
+
+export type ScriptedReply =
+  /** Parts in order, then `[DONE]` unless `cut` (the stream just ends) or a part was `error`/`hang`. */
+  | { stream: StreamPart[]; cut?: boolean }
+  /** A non-streamed answer (status 200 unless given). */
+  | { json: unknown; status?: number; headers?: Record<string, string> }
+  /** A refusal before any streaming: a status, a body (JSON, or text as given), headers. */
+  | { status: number; body: unknown; headers?: Record<string, string> };
+
+/** A stream that answers with text and stops, with usage. */
+export const textReply = (text: string, usage = { input: 100, output: 10 }): ScriptedReply => ({ stream: [{ text }, { finish: "stop" }, { usage }] });
+
+/** A stream that asks for tool calls. */
+export const callsReply = (calls: { id: string; name: string; args: unknown }[], usage = { input: 100, output: 10 }): ScriptedReply => ({
+  stream: [...calls.map((c) => ({ toolCall: { id: c.id, name: c.name, arguments: typeof c.args === "string" ? c.args : JSON.stringify(c.args) } })), { finish: "tool_calls" as const }, { usage }],
+});
+
+async function playScript(reply: ScriptedReply, req: IncomingMessage, res: ServerResponse): Promise<void> {
+  if ("status" in reply && !("json" in reply)) {
+    const text = typeof reply.body === "string" ? reply.body : JSON.stringify(reply.body);
+    res.writeHead(reply.status, { "Content-Type": typeof reply.body === "string" ? "text/html" : "application/json", ...reply.headers });
+    return void res.end(text);
+  }
+  if ("json" in reply) {
+    res.writeHead(reply.status ?? 200, { "Content-Type": "application/json", ...reply.headers });
+    return void res.end(JSON.stringify(reply.json));
+  }
+  res.writeHead(200, { "Content-Type": "text/event-stream" });
+  let model = "fake/model";
+  const routing = reply.stream.find((p): p is Extract<StreamPart, { routing: unknown }> => "routing" in p);
+  if (routing) model = routing.routing.model;
+  const meta = () => ({ id: "chatcmpl-s", object: "chat.completion.chunk", created: 1, model });
+  const write = (o: unknown) => res.write(`data: ${JSON.stringify(o)}\n\n`);
+  const delta = (d: Record<string, unknown>, finish: string | null = null) => write({ ...meta(), choices: [{ index: 0, delta: d, finish_reason: finish }] });
+  write(routing ? { ...meta(), choices: [{ index: 0, delta: { role: "assistant", content: "" }, finish_reason: null }], memtro: { mode: "chat", routing: routing.routing.detail } } : { ...meta(), choices: [{ index: 0, delta: { role: "assistant", content: "" }, finish_reason: null }] });
+  let toolIndex = 0;
+  for (const part of reply.stream) {
+    await new Promise((r) => setImmediate(r));
+    if ("text" in part) delta({ content: part.text });
+    else if ("thinking" in part) delta({ reasoning_content: part.thinking });
+    else if ("toolCall" in part) delta({ tool_calls: [{ index: toolIndex++, id: part.toolCall.id, type: "function", function: { name: part.toolCall.name, arguments: part.toolCall.arguments } }] });
+    else if ("answeredBy" in part) write({ ...meta(), choices: [], memtro: { answered_by: part.answeredBy } });
+    else if ("finish" in part) delta({}, part.finish);
+    else if ("usage" in part) write({ ...meta(), choices: [], usage: { prompt_tokens: part.usage.input, completion_tokens: part.usage.output, total_tokens: part.usage.input + part.usage.output, prompt_tokens_details: { cached_tokens: part.usage.cached ?? 0 } } });
+    else if ("error" in part) {
+      write({ error: { message: part.error, type: "server_error", param: null, code: null } });
+      return void res.end();
+    } else if ("hang" in part) {
+      await new Promise<void>((r) => {
+        req.socket.once("close", () => r());
+        res.once("close", () => r());
+      });
+      return void res.end();
+    }
+  }
+  if (!reply.cut) res.write("data: [DONE]\n\n");
+  res.end();
+}
+
 export async function startFakePlatform(): Promise<FakePlatform> {
   const pending = new Map<string, Pending>(); // keyed by sha256(code)
   const keys = new Map<string, { revoked: boolean; id: string }>();
   const requests: Recorded[] = [];
-  const fake = { mode: "approve" } as FakePlatform;
+  const fake = { mode: "approve", chatScript: [], models: null } as unknown as FakePlatform;
 
   const mintKey = () => {
     const key = `sk-memtro-${b64url(randomBytes(27))}`;
@@ -145,6 +226,8 @@ export async function startFakePlatform(): Promise<FakePlatform> {
     // ---- existing API ----
     if (req.method === "POST" && url.pathname === "/v1/chat/completions") {
       if (!authed(req)) return unauthorised(res);
+      const scripted = fake.chatScript.shift();
+      if (scripted) return playScript(scripted, req, res);
       const question = String((body as { messages?: { content?: string }[] })?.messages?.[0]?.content ?? "");
       res.writeHead(200, { "Content-Type": "text/event-stream" });
       const meta = { id: "chatcmpl-1", object: "chat.completion.chunk", created: 1, model: "fake/model" };
@@ -173,6 +256,12 @@ export async function startFakePlatform(): Promise<FakePlatform> {
         await new Promise((r) => setImmediate(r));
       }
       return res.end();
+    }
+
+    if (req.method === "GET" && url.pathname === "/v1/models") {
+      if (!authed(req)) return unauthorised(res);
+      if (!fake.models) return json(res, 404, { error: { message: "Not found", type: "invalid_request_error", code: null } });
+      return json(res, 200, { object: "list", data: fake.models, has_more: false });
     }
 
     if (req.method === "GET" && url.pathname === "/v1/memory") {

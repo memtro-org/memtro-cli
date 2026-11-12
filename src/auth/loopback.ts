@@ -35,7 +35,7 @@ export function classifyCallback(req: { method: string | undefined; url: string 
 
   const state = url.searchParams.get("state");
   if (state === null || !sameSecret(state, expected.state)) {
-    return { action: "finish", outcome: { kind: "error", message: "The browser came back with a different sign-in attempt's state (an old tab, or a request this terminal did not start). Nothing was exchanged. Run `memtro login` again." } };
+    return { action: "finish", outcome: { kind: "error", message: "The browser came back with a different sign-in attempt's state (an old tab, or a request this terminal did not start). Nothing was exchanged. Try signing in again." } };
   }
   const error = url.searchParams.get("error");
   if (error === "access_denied") return { action: "finish", outcome: { kind: "denied" } };

@@ -41,9 +41,28 @@ export interface ProfileConfig {
   signed_in_at?: string;
 }
 
+/**
+ * The coding session's settings, written by hand: `mode` ("ask" | "auto"), `classifier.model` (a model id),
+ * `classifier.enabled` (false turns the safety check's model off, so everything it would judge is asked),
+ * `actions` (true lets Memtro's tools change connected systems). Top level of the file, beside `profiles`: a
+ * profile's entry is rewritten whole by every sign-in, so settings kept there would be lost.
+ */
+export interface HarnessConfig {
+  mode?: "ask" | "auto";
+  classifier: { model?: string; enabled?: boolean };
+  actions?: boolean;
+}
+
 export interface ConfigFile {
   version: 1;
   profiles: Record<string, ProfileConfig>;
+  mode?: unknown;
+  classifier?: unknown;
+  actions?: unknown;
+  /** false turns off the "a newer memtro is available" line at the start of a session. */
+  updateCheck?: unknown;
+  /** Anything else in the file is kept as it was when the file is rewritten. */
+  [other: string]: unknown;
 }
 
 /** `${XDG_CONFIG_HOME:-~/.config}/memtro`, `%APPDATA%\memtro` on Windows, or MEMTRO_CONFIG_DIR when set. */
@@ -71,7 +90,9 @@ export function readConfig(dir: string): ConfigFile {
   try {
     const parsed = JSON.parse(raw) as Partial<ConfigFile>;
     const profiles = parsed && typeof parsed.profiles === "object" && parsed.profiles ? parsed.profiles : {};
-    return { version: 1, profiles: profiles as Record<string, ProfileConfig> };
+    // Keys this version does not use are kept, so rewriting the file (a sign-in) never drops a setting.
+    const rest = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+    return { ...rest, version: 1, profiles: profiles as Record<string, ProfileConfig> };
   } catch {
     throw new CliError(`${configPath(dir)} is not valid JSON. Fix it or delete it (it holds no keys).`);
   }
@@ -107,9 +128,10 @@ export function checkBaseUrl(raw: string): string {
   try {
     url = new URL(trimBase(raw));
   } catch {
-    throw new UsageError(`Not a URL: "${raw}". Give the address Memtro is served at, e.g. https://platform.memtro.com`);
+    // JSON quoting: a value from the environment or a flag reaches the terminal with its control characters escaped.
+    throw new UsageError(`Not a URL: ${JSON.stringify(raw)}. Give the address Memtro is served at, e.g. https://platform.memtro.com`);
   }
-  if (url.protocol !== "https:" && url.protocol !== "http:") throw new UsageError(`The base URL must be http(s); got "${raw}".`);
+  if (url.protocol !== "https:" && url.protocol !== "http:") throw new UsageError(`The base URL must be http(s); got ${JSON.stringify(raw)}.`);
   if (url.username || url.password) throw new UsageError("The base URL must not carry a user name or password.");
   if (url.search || url.hash) throw new UsageError("The base URL must not carry a query or fragment.");
   return trimBase(url.toString());
@@ -133,4 +155,48 @@ export function resolveProfile(input: { profileFlag?: string; baseUrlFlag?: stri
   if (input.env.MEMTRO_BASE_URL) return { profile, baseUrl: checkBaseUrl(input.env.MEMTRO_BASE_URL), baseUrlFrom: "env" };
   if (stored) return { profile, baseUrl: checkBaseUrl(stored), baseUrlFrom: "profile" };
   return { profile, baseUrl: DEFAULT_BASE_URL, baseUrlFrom: "default" };
+}
+
+/**
+ * The harness settings. A value of the wrong kind is a usage error naming the key, not a silent default: somebody
+ * who wrote `"mode": "auto "` meant something.
+ */
+export function harnessSettings(config: ConfigFile, where = "config.json"): HarnessConfig {
+  const scopes: { label: string; v: { mode?: unknown; classifier?: unknown; actions?: unknown } }[] = [{ label: "", v: config }];
+  const out: HarnessConfig = { classifier: {} };
+  const bad = (key: string, want: string, got: unknown) => new UsageError(`${where}: ${key} must be ${want}; got ${JSON.stringify(got)}.`);
+  for (const { label, v } of scopes) {
+    if (v.mode !== undefined) {
+      if (v.mode !== "ask" && v.mode !== "auto") throw bad(`${label}mode`, '"ask" or "auto"', v.mode);
+      out.mode = v.mode;
+    }
+    if (v.actions !== undefined) {
+      if (typeof v.actions !== "boolean") throw bad(`${label}actions`, "true or false", v.actions);
+      out.actions = v.actions;
+    }
+    if (v.classifier !== undefined) {
+      const c = v.classifier as { model?: unknown; enabled?: unknown } | null;
+      if (!c || typeof c !== "object" || Array.isArray(c)) throw bad(`${label}classifier`, "an object", v.classifier);
+      if (c.model !== undefined) {
+        if (typeof c.model !== "string" || !c.model.trim()) throw bad(`${label}classifier.model`, "a model id", c.model);
+        out.classifier.model = c.model.trim();
+      }
+      if (c.enabled !== undefined) {
+        if (typeof c.enabled !== "boolean") throw bad(`${label}classifier.enabled`, "true or false", c.enabled);
+        out.classifier.enabled = c.enabled;
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * `updateCheck` (top level, beside `mode`): false turns off the session's "a newer memtro is available" line.
+ * `/update` and `memtro update` work either way. A value of the wrong kind is a usage error, like the others.
+ */
+export function updateCheckSetting(config: ConfigFile, where = "config.json"): boolean | undefined {
+  const v = config.updateCheck;
+  if (v === undefined) return undefined;
+  if (typeof v !== "boolean") throw new UsageError(`${where}: updateCheck must be true or false; got ${JSON.stringify(v)}.`);
+  return v;
 }

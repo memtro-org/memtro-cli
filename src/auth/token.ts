@@ -37,7 +37,7 @@ export async function exchangeCode(
 
   const parsed = (await res.json().catch(() => null)) as Record<string, unknown> | null;
   if (res.status === 400 && parsed?.error === "invalid_grant") {
-    throw new CliError("Memtro refused the sign-in code: it had expired, had already been used, or did not match this terminal. Codes last two minutes. Run `memtro login` again.");
+    throw new CliError("Memtro refused the sign-in code: it had expired, had already been used, or did not match this terminal. Codes last two minutes. Try signing in again.");
   }
   // Beyond this point nothing from the body is printed: a response from something that is not the contract's
   // endpoint (a proxy, a misconfigured host) could echo the code or carry anything else.
@@ -46,7 +46,7 @@ export async function exchangeCode(
   }
   if (res.status === 404) throw new CliError(`${base} does not offer CLI sign-in (404 on /api/cli/token). Check the base URL, or create a key in the dashboard and set MEMTRO_API_KEY.`);
   // 503 temporarily_unavailable: the platform could not reach its database. Retryable, unlike invalid_grant.
-  if (res.status === 503 || res.status === 502 || res.status === 504) throw new UnavailableError(`Memtro is temporarily unavailable and could not finish the sign-in (HTTP ${res.status}). Nothing was stored; run \`memtro login\` again in a moment.`);
+  if (res.status === 503 || res.status === 502 || res.status === 504) throw new UnavailableError(`Memtro is temporarily unavailable and could not finish the sign-in (HTTP ${res.status}). Nothing was stored; try signing in again in a moment.`);
   if (!res.ok) throw new CliError(`Memtro answered the sign-in with HTTP ${res.status}. Nothing was stored.`);
 
   if (!parsed || typeof parsed.api_key !== "string" || !looksLikeKey(parsed.api_key)) {

@@ -1,0 +1,184 @@
+# Builds the standalone executables natively on each platform and publishes them as a GitHub release.
+#
+#   A pushed tag vX.Y.Z (equal to package.json's version) builds, smoke-tests, attests and releases.
+#   Run it by hand (workflow_dispatch) with dry_run on to build and smoke-test every platform without releasing:
+#   the tarballs, checksums.txt and latest.json are kept as the workflow artifact release-assets, to inspect or to
+#   try install.sh against. Only the publish job can write, and it runs only for a pushed tag.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Build and smoke-test only: create no release and no attestation"
+        type: boolean
+        default: true
+
+permissions: {}
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  version:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      release: ${{ steps.v.outputs.release }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - id: v
+        name: The tag must equal v<package.json version>
+        env:
+          EVENT: ${{ github.event_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          version="$(node -p 'require("./package.json").version')"
+          # Every later step uses this value: it must be a plain version before it goes anywhere near a shell.
+          if ! printf '%s\n' "$version" | grep -Eq '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$'; then
+            echo "::error::package.json version is not a plain x.y.z version"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if [ "$EVENT" = "push" ]; then
+            if [ "$REF_TYPE" != "tag" ] || [ "$REF_NAME" != "v$version" ]; then
+              echo "::error::tag $REF_NAME does not equal v$version (package.json); bump package.json and src/version.ts, or fix the tag"
+              exit 1
+            fi
+            echo "release=true" >> "$GITHUB_OUTPUT"
+          elif [ "$DRY_RUN" = "false" ]; then
+            echo "::error::a release is only made from a pushed tag; run by hand with dry_run on"
+            exit 1
+          else
+            echo "release=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    needs: version
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: linux-x64
+          - runner: ubuntu-24.04-arm
+            target: linux-arm64
+          - runner: macos-15
+            target: darwin-arm64
+          - runner: macos-15-intel
+            target: darwin-x64
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run bundle
+      - run: npm run build:sea
+      # Values reach the shell through env, never by interpolation into the script.
+      - name: The executable is for this runner's platform
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          test -f "build/memtro-$TARGET"
+          test -f "build/memtro-$TARGET.tar.gz"
+      - name: Smoke test
+        env:
+          TARGET: ${{ matrix.target }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: node scripts/smoke-sea.mjs "build/memtro-$TARGET" "$VERSION"
+      - name: Smoke test the tarball's copy
+        env:
+          TARGET: ${{ matrix.target }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          mkdir -p smoke
+          tar -xzf "build/memtro-$TARGET.tar.gz" -C smoke
+          test "$(tar -tzf "build/memtro-$TARGET.tar.gz")" = "memtro"
+          node scripts/smoke-sea.mjs smoke/memtro "$VERSION"
+      - if: runner.os == 'macOS'
+        env:
+          TARGET: ${{ matrix.target }}
+        run: codesign --verify --verbose "build/memtro-$TARGET"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: memtro-${{ matrix.target }}
+          path: build/memtro-${{ matrix.target }}.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+  assemble:
+    needs: [version, build]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: memtro-*
+          path: dist
+          merge-multiple: true
+      - name: checksums.txt and latest.json
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          node scripts/release-manifest.mjs dist "$VERSION"
+          cat dist/checksums.txt
+          cat dist/latest.json
+          (cd dist && sha256sum --check checksums.txt)
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-assets
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: [version, assemble]
+    if: needs.version.outputs.release == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: release-assets
+          path: dist
+      - name: The assets are the ones assemble checked
+        run: (cd dist && sha256sum --check checksums.txt)
+      - uses: actions/attest@v4
+        with:
+          subject-path: dist/memtro-*.tar.gz
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: v${{ needs.version.outputs.version }}
+        # gh creates a draft, uploads every asset, then publishes, so releases/latest never points at a release
+        # whose latest.json or checksums.txt is still missing.
+        run: |
+          gh release create "$TAG" dist/memtro-*.tar.gz dist/checksums.txt dist/latest.json \
+            --repo "$GITHUB_REPOSITORY" --verify-tag --title "memtro $TAG" --generate-notes
