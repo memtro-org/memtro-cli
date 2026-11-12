@@ -89,6 +89,8 @@ jobs:
         with:
           node-version: 24
           check-latest: true
+          # No dependency cache in a release build: npm ci takes seconds, and nothing restored from a cache goes in.
+          package-manager-cache: false
       - run: npm ci
       - run: npm run typecheck
       - run: npm run bundle
@@ -139,6 +141,7 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 24
+          package-manager-cache: false
       - uses: actions/download-artifact@v8
         with:
           pattern: memtro-*
