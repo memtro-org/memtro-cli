@@ -1,0 +1,35 @@
+{
+  "name": "@memtro/cli",
+  "version": "0.1.0",
+  "description": "The memtro command: your company's memory, its connected systems and its agent, from a terminal or a script.",
+  "keywords": [
+    "memtro",
+    "cli",
+    "memory",
+    "mcp"
+  ],
+  "license": "MIT",
+  "homepage": "https://www.memtro.com/docs/",
+  "type": "module",
+  "bin": {
+    "memtro": "dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json && node --input-type=module -e \"import { chmodSync } from 'node:fs'; chmodSync('dist/cli.js', 0o755)\"",
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test test/*.test.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.2",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3"
+  }
+}
