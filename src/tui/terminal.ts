@@ -12,6 +12,30 @@ export const BRACKETED_PASTE_ON = "\u001b[?2004h";
 /** Bracketed paste off, cursor shown. */
 export const RESTORE = "\u001b[?2004l\u001b[?25h";
 
+/**
+ * More to put back on every way out: the full-screen interface registers its own `stop` (alternate screen, mouse,
+ * keyboard protocol…) here, so the one guard covers it. Each runs before the guard's own restore, synchronously,
+ * and a failing one does not stop the rest. Returns a function that removes it.
+ */
+const restorers = new Set<() => void>();
+
+export function onRestore(fn: () => void): () => void {
+  restorers.add(fn);
+  return () => {
+    restorers.delete(fn);
+  };
+}
+
+function runRestorers(): void {
+  for (const fn of [...restorers]) {
+    try {
+      fn();
+    } catch {
+      // the next one still runs
+    }
+  }
+}
+
 export interface TerminalGuard {
   restore(): void;
   /** Restores and removes every handler it added. */
@@ -24,6 +48,7 @@ export function guardTerminal(input: TtyIn, output: NodeJS.WritableStream, proc:
   output.write(BRACKETED_PASTE_ON);
   // Not once-only: raw mode is turned on again after every prompt, so every exit path puts it back.
   const restore = () => {
+    runRestorers();
     try {
       input.setRawMode?.(false);
     } catch {

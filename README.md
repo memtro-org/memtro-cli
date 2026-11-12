@@ -69,7 +69,7 @@ To build the standalone executable for this computer, use Node.js 24 (the build 
 
 ## Update
 
-In a session, type `/update`. Outside one, run `memtro update`. To pick a version, use `memtro update --version 0.3.0`. Either way, memtro downloads the release for your system, checks its SHA-256 against the release's `checksums.txt`, checks its build attestation (below), and proves the new file starts. Then it swaps the new file in. The running copy carries on; the new version starts the next time you run `memtro`. If anything fails, the installed file is left exactly as it was.
+In a session, type `/update`. Outside one, run `memtro update`. To pick a version, use `memtro update --version 0.2.1`. Either way, memtro downloads the release for your system, checks its SHA-256 against the release's `checksums.txt`, checks its build attestation (below), and proves the new file starts. Then it swaps the new file in. The running copy carries on; the new version starts the next time you run `memtro`. If anything fails, the installed file is left exactly as it was.
 
 **The build attestation.** Every release tarball is attested by the release workflow (`actions/attest`), which records in Sigstore's public transparency log that this exact file was built by `.github/workflows/release.yml` in `memtro-org/memtro-cli` at the release's tag. Before the new file is unpacked or run, `memtro update` asks GitHub's API for the provenance attestations of the tarball's SHA-256 and verifies them itself, against a copy of Sigstore's trusted root built into memtro: the signature over the statement, the signing certificate's chain to Sigstore's certificate authority at the time of signing, that time as signed by the transparency log, that the log entry is for this signature and certificate, that the statement names this file's SHA-256, and that the certificate was issued to exactly that workflow, repository (by name and by numeric id), owner id and tag, for a run started by pushing that tag, on a GitHub-hosted runner. The signature, the statement and the identity are checked first, so an attestation that fails them is refused even when it also names a log or key this version does not know. There are three outcomes:
 
@@ -101,30 +101,59 @@ Run `memtro logout` first if you want the key revoked on Memtro and removed from
 
 ## The session
 
-| Key or command | What it does |
+In a terminal of at least 50×12, `memtro` takes over the whole window (the alternate screen, as `vim` or `less` do) and gives it back as it was when you leave, with one line saying the session's id and how to resume it (when anything was said; a session with nothing in it is not saved). Everything it draws, it draws itself: the start screen (the wordmark, any notice such as an available update, the input), then the conversation, newest at the bottom, under a header with the session's title, the tokens used and how much of the model's context is in use.
+
+With `--inline`, `"ui": "inline"` in `config.json`, in a smaller terminal, with `TERM=dumb`, or when stdin or stdout is not a terminal, you get the inline interface instead: output scrolls like any other command's and the terminal's own scrollback and selection work as usual. Everything below about commands and the approval prompt applies to both; the menus, dialogs, themes and mouse are the full-screen interface's.
+
+| Key | What it does |
 |---|---|
-| Enter | Send. End a line with `\` to carry on onto the next; pasted text keeps its lines. |
-| Esc or Ctrl-C while it works | Stop the turn. Every tool call it had asked for gets a result saying so, and the session carries on. Ctrl-C twice within two seconds leaves. |
-| Ctrl-C at the prompt | Clear what you typed; twice leaves. Ctrl-D leaves too. |
-| `/model [id]` | List the models your account offers, or switch. |
+| Enter | Send. Alt+Enter or Ctrl+J starts a new line, as does Shift+Enter in a terminal that reports it, and a line ending in `\`; pasted text keeps its lines, and a long paste shows as `[pasted N lines]` until it is sent. |
+| Up / Down | Move through earlier messages (this directory's history), or through a menu when one is open. |
+| Esc or Ctrl+C while it works | Stop the turn. Every tool call it had asked for gets a result saying so, and the session carries on. Ctrl+C twice within two seconds leaves. |
+| Enter while it works | Queue the message: the hint row says "queued" and it is sent when the turn ends (a queued `/command` runs as a command). If you stop the turn with Esc instead, the queued message is not sent: it goes back into the input. |
+| Ctrl+C at the prompt | Clear what you typed; at an empty prompt, twice within two seconds leaves. Ctrl+D at an empty prompt leaves too. |
+| Ctrl+P | The command palette: every slash command and the keys below, grouped (Session, Model, Safety, Account, App). Type to filter. |
+| PageUp / PageDown, Ctrl+Alt+U / D | Scroll the conversation a page, or half a page. While you are scrolled up, new output does not move the view, and a "↓ newer" marker shows. |
+| Ctrl+G / Ctrl+Alt+G | Top / newest. Home and End do the same when the input is empty. |
+| Ctrl+L | Repaint the whole screen. |
+| Ctrl+Z | Suspend; `fg` brings it back as it was. |
+
+**Slash commands.** Typing `/` as the first character opens a menu of commands above the input, filtered as you type (fuzzy, names first). Up/Down or Ctrl+P/Ctrl+N move; **Tab** completes the selected name into the input and never runs anything; **Enter** runs it (a command that takes an argument, such as `/model`, is completed first unless what you typed already names it; one that acts, such as `/logout`, `/new` or `/update`, runs only when what you typed is its name or a beginning no other command shares, and is otherwise completed so that a second Enter runs it); Esc hides the menu and keeps your text. Text of more than one line is always a message, even when it starts with a command's name. Once a command's name and a space are typed, the menu lists that argument's choices where they are known: `/model ` the models, `/mode ` ask and auto, `/resume ` the sessions, `/actions ` on and off, `/theme ` auto, dark and light. To send a message that starts with `/`, begin it with a space.
+
+**Files.** Typing `@` lists the files in the repository (as `git` or `rg` count them, `.gitignore` honoured), filtered as you type; Tab or Enter inserts the path into your message as text.
+
+| Command | What it does |
+|---|---|
+| `/model [id]` | Pick from the models your account offers (the current one is marked), or switch to one by id. Under your organisation's routing lock the list says that whatever you pick is answered by the organisation's default model. |
 | `/mode ask` / `/mode auto` | How much you are asked (below). |
 | `/actions on` / `off` | Let Memtro's tools change connected systems, or stop them. Off by default. |
-| `/new`, `/resume` | Start a new session, or carry on one of this directory's earlier ones. |
+| `/new`, `/resume [id]` | Start a new session, or pick one of this directory's earlier ones (title, age, model) to carry on. |
 | `/compact` | Summarise the older part of the conversation now (it also happens on its own near the model's context limit, when the limit is known). |
-| `/login` | Sign in again, perhaps as somebody else; the conversation carries on with the new key. |
+| `/copy` | Copy the last answer, as the Markdown the model wrote (less any control characters, which it says it left out), to the clipboard. It is sent through your terminal (the OSC 52 clipboard request), so it works over SSH; memtro cannot see whether the terminal accepted it, and says so. Terminal.app does not accept it, tmux passes it on only with `set -g set-clipboard on`, and an answer too large for one request is refused rather than cut. |
+| `/theme [auto\|dark\|light]` | Change the colours. `auto` (the default) follows the terminal's background when the terminal says what it is, and is dark otherwise. |
+| `/tools` | The tools the model can use, on this computer and from Memtro; those that can change something are marked. |
+| `/login` | Sign in again, perhaps as somebody else; the conversation carries on with the new key. The full screen steps aside while you sign in. |
 | `/logout` | Revoke this computer's key, remove it, and end the session. |
 | `/update` | Update memtro to the latest release; it starts the next time you run memtro. |
-| `/tools`, `/whoami`, `/help` | |
-| `/quit` or `/exit` | Leave (Ctrl-D does too). |
+| `/whoami`, `/help` | Who the key belongs to; the keys and commands. |
+| `/quit` or `/exit` | Leave (Ctrl+D does too). |
 
-When a newer release is known, the session's first lines say so ("memtro 0.3.0 is available (you have 0.2.0). Type /update."). That comes from the answer of the last check, kept on disk; a new check runs in the background, at most once a day, never delays start-up and prints nothing. It asks GitHub for the latest release and sends nothing about you or your key. `MEMTRO_NO_UPDATE_CHECK=1`, or `"updateCheck": false` in `config.json`, turns the line off; `/update` still works. It is never shown in `memtro run`, with `--json`, or when stdout is not a terminal.
+**When a tool call needs you**, the question appears in a panel just above the input, with a yellow bar, so the conversation that led to it stays in view, and the input is disabled until you answer. It shows the call's title, the command in full (wrapped, never cut, with control characters shown rather than obeyed), the diff for an edit, where a linked path really leads, and why you are asked and by what. If it is taller than the space, Up/Down/PageUp/PageDown (or the wheel) scroll it and it says "more above" or "more below"; until its last line has been on screen, `y` and `a` allow nothing (it says "read to the end to allow"), and the same holds while the window is too small to show the whole panel. Then one key: `y` allow once, `a` allow for the rest of the session (only when offered; it says exactly what it would cover), `n` deny, `e` deny with a note for the model (Enter sends the note, Esc goes back to the choices). The rules are the inline prompt's, described under [Safety](#safety): Enter is not yes, nothing pasted answers, a key typed before the panel was drawn and had settled, or in a quick burst of keys, is ignored, typing is not taken for a decision, and mouse, focus and resize events never answer (they restart the wait instead). Only one question is open at a time. Esc or Ctrl+C denies (Ctrl+C also stops the turn); if the turn is stopped while the panel is open, the call is denied.
 
-After each turn one line says which model answered, the tokens the turn used, how much of the context window is in use, and the mode.
+**The conversation.** Answers are rendered as Markdown (headings, lists, tables, code with highlighting, links with their address shown in full after the text; only the address itself opens when clicked). Each tool call is one line with its outcome folded in (`✓`, `✗ exit 1`, `✗ refused: …`); an edit shows its diff under it, and a command shows the last lines of its output while it runs and when it fails. The model's thinking shows as one line ("thought for N lines") unless you started with `--verbose`. After each answer a muted line says which model answered and the tokens the turn used. Under the input, the status line shows the mode, the model in use, your organisation and how much of the context is in use.
 
-Options: `--model <id>`, `--mode ask|auto`, `--continue` (this directory's latest session), `--resume [<id>]`, `--actions`, `--no-classifier`, `--allow-edits`, `--allow "<command prefix>"` (repeatable), `--unchecked`, plus the usual `--profile`, `--base-url`, `--no-browser`, `--verbose`, `--json` (for `run`). The same settings can live in `config.json` beside `profiles`:
+**Mouse.** The mouse wheel scrolls the conversation. While memtro has the mouse, your terminal's ordinary click-and-drag selection needs a modifier: hold Shift while you drag (Option in iTerm2). `--no-mouse`, or `"mouse": false` in `config.json`, leaves the mouse to the terminal: plain selection, and no wheel scrolling. `/copy` copies the last answer whole.
+
+**Colours.** A dark and a light theme of memtro's own, chosen by `theme` in `config.json` (`"auto"`, `"dark"` or `"light"`), `--theme`, or `/theme`. Colours drop to 256 or 16 when the terminal has fewer, and to none with `NO_COLOR` or `--no-color`, where the selected row is also marked with `>`.
+
+When a newer release is known, the start screen (or, inline, the session's first lines) says so ("memtro 0.3.0 is available (you have 0.2.0). Type /update."). That comes from the answer of the last check, kept on disk; a new check runs in the background, at most once a day, never delays start-up and prints nothing. It asks GitHub for the latest release and sends nothing about you or your key. `MEMTRO_NO_UPDATE_CHECK=1`, or `"updateCheck": false` in `config.json`, turns the line off; `/update` still works. It is never shown in `memtro run`, with `--json`, or when stdout is not a terminal.
+
+In the inline interface, after each turn one line says which model answered, the tokens the turn used, how much of the context window is in use, and the mode.
+
+Options: `--model <id>`, `--mode ask|auto`, `--continue` (this directory's latest session), `--resume [<id>]`, `--actions`, `--no-classifier`, `--allow-edits`, `--allow "<command prefix>"` (repeatable), `--unchecked`, plus the usual `--profile`, `--base-url`, `--no-browser`, `--verbose`, `--json` (for `run`). For the interactive session only: `--inline`, `--theme auto|dark|light`, `--no-mouse`. The same settings can live in `config.json` beside `profiles`:
 
 ```json
-{ "mode": "auto", "classifier": { "model": "anthropic/claude-haiku-4-5-20251001", "enabled": true, "timeoutMs": 8000 }, "actions": false, "updateCheck": true }
+{ "mode": "auto", "classifier": { "model": "anthropic/claude-haiku-4-5-20251001", "enabled": true, "timeoutMs": 8000 }, "actions": false, "updateCheck": true, "ui": "full", "theme": "auto", "mouse": true }
 ```
 
 `classifier.timeoutMs` is how long, in milliseconds, the safety check may take before the call is put to you instead: a whole number, default 8000. Anything above 60000 is treated as 60000.
@@ -147,7 +176,7 @@ Read this before you use it on anything you care about.
 
 **What the safety check sees.** What you have typed in this session (the most recent last, capped), the working directory and whether it is a git repository, the titles of earlier calls this turn, and the pending call: tool, kind, title, the command in full, the paths, and the diff (capped). It never sees tool results or the model's own words, so a file or web page cannot argue its case to it. Everything quoted to it is marked as data, and titles (which the agent writes, including a command's description) are marked as the agent's words, not the person's. If any part of the pending call had to be cut to fit, an "allow" is turned into a question for you. It runs on the cheapest model your account lists that it recognises; under your organisation's routing lock that is your organisation's default model, and an administrator can allow explicit models so a small one is used. `classifier.model` in `config.json` picks one; `--no-classifier` or `classifier.enabled: false` turns it off, and then `auto` behaves exactly like `ask`.
 
-**When you are asked**, you see the command in full, never shortened, with every control character and escape sequence shown rather than obeyed, so a command cannot hide part of itself or redraw the prompt; the diff for an edit; and why you are being asked and by what. One key answers: `y` once, `a` for the rest of the session (only when offered, and the prompt says what it would cover, such as "any `npm test …`"; the limits on a prefix are below), `n` no, `e` no with a note the model reads. Enter is not yes, pasted text does not answer, and keys typed before the prompt appeared are ignored.
+**When you are asked**, you see the command in full, never shortened, with every control character and escape sequence shown rather than obeyed, so a command cannot hide part of itself or redraw the prompt; the diff for an edit; and why you are being asked and by what. One key answers: `y` once, `a` for the rest of the session (only when offered, and the prompt says what it would cover, such as "any `npm test …`"; the limits on a prefix are below), `n` no, `e` no with a note the model reads. Enter is not yes, pasted text does not answer, and keys typed before the prompt appeared are ignored. Typing is not a decision either: a key that follows any other input by less than about a third of a second (the end of a word you were still typing when the prompt appeared) answers nothing, and an answering key takes effect a moment after you press it, unless another key follows at once. Both interfaces follow these rules.
 
 **Everything the model or a tool prints** is cleaned before it reaches your terminal: escape sequences are made visible, so a file's contents cannot move the cursor, set the window title or write to your clipboard.
 

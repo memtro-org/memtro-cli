@@ -1,6 +1,6 @@
 {
   "name": "@memtro/cli",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "The memtro command: your company's memory, its connected systems and its agent, from a terminal or a script.",
   "keywords": [
     "memtro",

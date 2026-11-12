@@ -1,0 +1,55 @@
+Quickstart|
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━|
+|
+Get from zero to a first request in five minutes.|
+|
+┃ Warning Before you start|
+┃ You need an API key. Create one under Settings → Keys.|
+|
+Install|
+────────────────────────────────────────────────────────────────────────|
+|
+npm|
+|
+  bash                                                                  |
+  npm install @acme/sdk                                                 |
+                                                                        |
+|
+pnpm|
+|
+  bash                                                                  |
+  pnpm add @acme/sdk                                                    |
+                                                                        |
+|
+Send a request|
+────────────────────────────────────────────────────────────────────────|
+|
+1. Create a client|
+|
+   Pass the key from the environment, never inline.|
+|
+2. Call the API|
+|
+     index.ts · ts                                                      |
+     const res = await client.ping();                                   |
+                                                                        |
+|
+  curl · bash                                                           |
+  curl https://api.acme.dev/v1/ping -H "Authorization: Bearer $KEY"     |
+                                                                        |
+|
+  Python · python                                                       |
+  client.ping()                                                         |
+                                                                        |
+|
+┃ Tip Faster local runs|
+┃ Set ACME_CACHE=1 to reuse responses.|
+|
+API reference (https://docs.acme.dev/api)|
+Every endpoint, with examples.|
+|
+Press [Ctrl] + [C] to stop. The current value is {props.value}.|
+|
+▸ Troubleshooting|
+  • Check the key has the read scope.|
+  • Retry after a 429.|

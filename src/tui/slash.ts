@@ -14,25 +14,111 @@ export interface SlashCommand {
   args: string;
 }
 
-export const SLASH_COMMANDS: { name: string; usage: string; summary: string }[] = [
-  { name: "help", usage: "/help", summary: "These commands, and the keys" },
-  { name: "model", usage: "/model [<id>]", summary: "List the models this account offers, or switch to one" },
-  { name: "mode", usage: "/mode [ask|auto]", summary: "Show or change how much you are asked" },
-  { name: "new", usage: "/new", summary: "Start a new session (this one stays saved)" },
-  { name: "resume", usage: "/resume", summary: "Carry on an earlier session in this directory" },
-  { name: "compact", usage: "/compact", summary: "Summarise the older part of the conversation now" },
-  { name: "tools", usage: "/tools", summary: "The tools the model can use" },
-  { name: "actions", usage: "/actions on|off", summary: "Let Memtro's tools change connected systems, or stop them" },
-  { name: "login", usage: "/login", summary: "Sign in again, perhaps as somebody else (the conversation carries on)" },
-  { name: "logout", usage: "/logout", summary: "Revoke this computer's key, remove it, and leave" },
-  { name: "update", usage: "/update", summary: "Update memtro to the latest release (it starts next time)" },
-  { name: "whoami", usage: "/whoami", summary: "Who the key belongs to" },
-  { name: "quit", usage: "/quit", summary: "Leave (so do /exit and Ctrl-D)" },
+/** One value an argument can take, for the full-screen interface's menu. */
+export interface SlashChoice {
+  /** What is typed after the command: `/mode ask`. */
+  value: string;
+  /** Shown beside the value, muted. */
+  detail?: string;
+  /** The value in force now, marked in a list. */
+  current?: boolean;
+}
+
+/** What a command's choices are read from: the parts of the host that answer without side effects. */
+export type ChoiceHost = Pick<SlashHost, "model" | "models" | "mode" | "sessions" | "actions" | "now"> & { theme?: () => string };
+
+export interface SlashCommandInfo {
+  name: string;
+  usage: string;
+  summary: string;
+  /** The argument, as the menu shows it after the name: `[id]`, `ask|auto`. Empty when it takes none. */
+  hint: string;
+  /**
+   * True when running it changes something beyond this screen (signs out, installs, starts afresh): the menu
+   * completes such a command on Tab and runs it only on Enter.
+   */
+  acts: boolean;
+  /** The values its argument can take, when they are known. Never does anything but read the host. */
+  choices?: (host: ChoiceHost) => SlashChoice[];
+}
+
+export const SLASH_COMMANDS: SlashCommandInfo[] = [
+  { name: "help", usage: "/help", summary: "These commands, and the keys", hint: "", acts: false },
+  {
+    name: "model",
+    usage: "/model [<id>]",
+    summary: "List the models this account offers, or switch to one",
+    hint: "[id]",
+    acts: false,
+    choices: (h) =>
+      (h.models() ?? []).map((m) => {
+        const id = m.id.replace(/:(chat|agent)$/, "");
+        return { value: id, current: id === h.model(), ...(m.context ? { detail: `${compactNumber(m.context)} context` } : {}) };
+      }),
+  },
+  {
+    name: "mode",
+    usage: "/mode [ask|auto]",
+    summary: "Show or change how much you are asked",
+    hint: "[ask|auto]",
+    acts: false,
+    choices: (h) => [
+      { value: "ask", detail: "every edit, command and remote action is put to you", current: h.mode() === "ask" },
+      { value: "auto", detail: "the safety check judges them; its doubts are put to you", current: h.mode() === "auto" },
+    ],
+  },
+  { name: "new", usage: "/new", summary: "Start a new session (this one stays saved)", hint: "", acts: true },
+  {
+    name: "resume",
+    usage: "/resume",
+    summary: "Carry on an earlier session in this directory",
+    hint: "[session]",
+    acts: true,
+    choices: (h) =>
+      h
+        .sessions()
+        .slice(0, SESSIONS_LISTED)
+        .map((s) => ({ value: s.id, detail: `${oneLine(s.title) || "(untitled)"} · ${ago(s.started, h.now())}` })),
+  },
+  { name: "compact", usage: "/compact", summary: "Summarise the older part of the conversation now", hint: "", acts: true },
+  { name: "copy", usage: "/copy", summary: "Copy the last answer to the clipboard", hint: "", acts: false },
+  { name: "tools", usage: "/tools", summary: "The tools the model can use", hint: "", acts: false },
+  {
+    name: "actions",
+    usage: "/actions on|off",
+    summary: "Let Memtro's tools change connected systems, or stop them",
+    hint: "on|off",
+    acts: true,
+    choices: (h) => [
+      { value: "on", detail: "Memtro's tools can change connected systems (each call checked)", current: h.actions() },
+      { value: "off", detail: "Memtro's tools can read, not change, connected systems", current: !h.actions() },
+    ],
+  },
+  {
+    name: "theme",
+    usage: "/theme [dark|light|auto]",
+    summary: "Change the colours (auto follows the terminal)",
+    hint: "[dark|light|auto]",
+    acts: false,
+    choices: (h) =>
+      (["auto", "dark", "light"] as const).map((v) => ({ value: v, current: h.theme?.() === v, ...(v === "auto" ? { detail: "follow the terminal's background" } : {}) })),
+  },
+  { name: "login", usage: "/login", summary: "Sign in again, perhaps as somebody else (the conversation carries on)", hint: "", acts: true },
+  { name: "logout", usage: "/logout", summary: "Revoke this computer's key, remove it, and leave", hint: "", acts: true },
+  { name: "update", usage: "/update", summary: "Update memtro to the latest release (it starts next time)", hint: "", acts: true },
+  { name: "whoami", usage: "/whoami", summary: "Who the key belongs to", hint: "", acts: false },
+  { name: "quit", usage: "/quit", summary: "Leave (so do /exit and Ctrl-D)", hint: "", acts: true },
 ];
+
+export const findSlash = (name: string): SlashCommandInfo | undefined => SLASH_COMMANDS.find((c) => c.name === name);
 
 /** `/model x` → {name: "model", args: "x"}. Null for text that is not a slash command. */
 export function parseSlash(text: string): SlashCommand | null {
-  const m = /^\/([a-z]+)(?:\s+([\s\S]*))?$/.exec(text.trim());
+  const t = text.trim();
+  // A command is one line. Several lines that begin with a command's name (a paste, say "/logout" then more) are a
+  // message, so pasted text can never run a command that acts.
+  if (t.includes("\n") || t.includes("\r")) return null;
+  const m = /^\/([a-z]+)(?:\s+(.*))?$/.exec(t);
   if (!m || !text.startsWith("/")) return null;
   return { name: m[1]!, args: (m[2] ?? "").trim() };
 }
@@ -49,6 +135,11 @@ export function slashHelp(st: Style): string {
   return lines.join("\n");
 }
 
+/** This directory's sessions without the one in progress: resuming that would change nothing. Both interfaces list these. */
+export function otherSessions(list: SessionMeta[], current: string): SessionMeta[] {
+  return list.filter((m) => m.id !== current);
+}
+
 export interface SlashHost {
   style: Style;
   say(text: string): void;
@@ -62,6 +153,7 @@ export interface SlashHost {
   setMode(mode: Mode): void;
   classifierOn(): boolean;
   newSession(): void;
+  /** Earlier sessions in this directory, newest first, never the one in progress (`otherSessions`). */
   sessions(): SessionMeta[];
   resume(id: string): boolean;
   pick(prompt: string): Promise<string>;
@@ -75,6 +167,10 @@ export interface SlashHost {
   update(): Promise<void>;
   whoami(): Promise<void>;
   now(): Date;
+  /** `/theme`: the full-screen interface changes its colours; the inline one has none of its own. */
+  theme?(choice: string): void;
+  /** `/copy`: the full-screen interface copies the last answer; the inline one leaves that to the terminal. */
+  copy?(): void;
 }
 
 /** How long ago, in words a list can carry: "3 min ago", "2 h ago", "4 days ago". */
@@ -204,6 +300,15 @@ export async function runSlash(cmd: SlashCommand, h: SlashHost): Promise<"quit" 
       return "ok";
     case "whoami":
       await h.whoami();
+      return "ok";
+    case "theme":
+      if (!h.theme) h.say("/theme changes the full-screen interface's colours; this one uses your terminal's own.");
+      else if (cmd.args && cmd.args !== "dark" && cmd.args !== "light" && cmd.args !== "auto") h.say(st.red("/theme takes dark, light or auto."));
+      else h.theme(cmd.args);
+      return "ok";
+    case "copy":
+      if (!h.copy) h.say("/copy works in the full-screen interface; here, select the text with your terminal.");
+      else h.copy();
       return "ok";
     default:
       h.say(st.red(`Unknown command /${oneLine(cmd.name)}. /help lists them; to send text starting with /, begin it with a space.`));

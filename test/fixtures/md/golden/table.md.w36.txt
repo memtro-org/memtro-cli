@@ -1,0 +1,13 @@
+Command       │ What it does  │ Exit|
+──────────────┼───────────────┼─────|
+memtro run    │ Runs one      │    0|
+              │ prompt and    │|
+              │ prints the    │|
+              │ answer, then  │|
+              │ exits         │|
+memtro chat   │ Opens the     │    0|
+              │ full-screen   │|
+              │ interface     │|
+memtro doctor │ Checks the    │    1|
+              │ install |     │|
+              │ config        │|

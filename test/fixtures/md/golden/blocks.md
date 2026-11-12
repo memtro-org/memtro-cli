@@ -1,0 +1,23 @@
+# Release notes
+
+Version **2.1** brings *faster* syncs, ~~fewer~~ no dropped events, and a new `--dry-run` flag.
+A soft break joins lines; two spaces make a hard  
+break.
+
+## What changed
+
+1. Sync runs in the background.
+2. Retries back off:
+   - first after 1s
+   - then 2s, 4s, 8s
+3. Logs are quieter.
+
+- [x] Ship it
+- [ ] Write the blog post
+
+> Upgrading is safe. If anything looks wrong,
+> run `memtro doctor`.
+
+---
+
+![Architecture diagram](https://docs.example/arch.png)

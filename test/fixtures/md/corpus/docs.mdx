@@ -1,0 +1,71 @@
+---
+title: Quickstart
+description: Install the SDK and send your first request.
+---
+
+import { Tabs, TabItem } from "@site/components";
+import Callout from "../components/Callout";
+export const meta = {
+  sidebar: "guides",
+};
+
+# Quickstart
+
+Get from zero to a first request in five minutes. {/* TODO: screenshot */}
+
+<Callout type="warning" title="Before you start">
+  You need an API key. Create one under **Settings → Keys**.
+</Callout>
+
+## Install
+
+<Tabs>
+  <TabItem value="npm" label="npm">
+    ```bash
+    npm install @acme/sdk
+    ```
+  </TabItem>
+  <TabItem value="pnpm" label="pnpm">
+    ```bash
+    pnpm add @acme/sdk
+    ```
+  </TabItem>
+</Tabs>
+
+## Send a request
+
+<Steps>
+  <Step title="Create a client">
+    Pass the key from the environment, never inline.
+  </Step>
+  <Step title="Call the API">
+    ```ts title="index.ts"
+    const res = await client.ping();
+    ```
+  </Step>
+</Steps>
+
+<CodeGroup>
+```bash curl
+curl https://api.acme.dev/v1/ping -H "Authorization: Bearer $KEY"
+```
+
+```python Python
+client.ping()
+```
+</CodeGroup>
+
+:::tip[Faster local runs]
+Set `ACME_CACHE=1` to reuse responses.
+:::
+
+<Card title="API reference" href="https://docs.acme.dev/api">
+  Every endpoint, with examples.
+</Card>
+
+Press <kbd>Ctrl</kbd> + <kbd>C</kbd> to stop. The current value is {props.value}.
+
+<Accordion title="Troubleshooting">
+  - Check the key has the `read` scope.
+  - Retry after a `429`.
+</Accordion>

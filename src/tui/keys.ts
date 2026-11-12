@@ -16,15 +16,23 @@ export const PASTE_END = "\u001b[201~";
 export class KeyRouter {
   private stack: KeyHandler[] = [];
   private attached = false;
+  private lastAt: number | null = null;
   private readonly onData = (data: Buffer | string) => {
     const chunk = typeof data === "string" ? data : data.toString("utf8");
-    this.stack.at(-1)?.(chunk, this.now());
+    const at = this.now();
+    this.stack.at(-1)?.(chunk, at);
+    this.lastAt = at;
   };
 
   constructor(
     private readonly input: TtyIn,
     private readonly now: () => number = Date.now,
   ) {}
+
+  /** When the last chunk of input arrived (whoever heard it), or null if none has: approval timing starts from it. */
+  get lastInputAt(): number | null {
+    return this.lastAt;
+  }
 
   get isAttached(): boolean {
     return this.attached;

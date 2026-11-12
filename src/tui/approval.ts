@@ -1,7 +1,7 @@
 import { isAbsolute, relative } from "node:path";
 import type { Answer, Approver, Decision, PendingCall, SessionRule } from "../agent/types.js";
 import { KeyRouter, PASTE_END, PASTE_START } from "./keys.js";
-import { colourDiff, reasonText, sourceWords } from "./render.js";
+import { colourDiff, whyText } from "./render.js";
 import { oneLine, visible } from "./sanitise.js";
 import type { Style } from "./style.js";
 
@@ -53,7 +53,7 @@ export function formatApproval(call: PendingCall, decision: Decision, suggested:
     const args = JSON.stringify(call.args);
     lines.push(`  ${st.dim("tool")} ${visible(call.tool)} ${st.dim(visible(args.length > 2000 ? `${args.slice(0, 2000)}… (${args.length - 2000} more characters)` : args))}`);
   }
-  const why = `${sourceWords(decision, o.classifierOn)}${decision.reason ? `: ${reasonText(decision)}` : ""}`;
+  const why = whyText(decision, o.classifierOn);
   // An always-ask rule is the one reason a person must not skim past.
   lines.push(`  ${st.dim("why")}  ${decision.source === "rule" ? st.yellow(st.bold(why)) : why}`);
   const choices = [`${st.bold("y")} yes, once`];
@@ -114,6 +114,72 @@ export class KeyGate {
   }
 }
 
+/** A key this soon after the input before it is typing, not a decision: it answers nothing. */
+export const TYPING_GAP_MS = 300;
+/** An answering key is held this long, and anything arriving meanwhile cancels it. */
+export const HOLD_MS = 120;
+
+export type KeyStep = { kind: "now"; choice: KeyChoice } | { kind: "held" } | { kind: "none" };
+
+/**
+ * The approval timing rules both interfaces use, on top of `KeyGate` (never instead of it). Typing is not a
+ * decision: a key less than `TYPING_GAP_MS` after any input before it (the end of a word a person had not finished
+ * typing when the prompt appeared, "today" ending in a y) answers nothing, and an answering key is held for `HOLD_MS`
+ * and cancelled by any input in that time, so a key that turns out to be the first of a burst answers nothing.
+ * Escape and Ctrl-C refuse at once, because refusing is always safe. Pure over time: the caller owns the clock and
+ * the timer that calls `commit` (or `release`).
+ */
+export class ApprovalKeys {
+  private readonly gate: KeyGate;
+  private lastInputAt: number;
+  private held: { choice: KeyChoice; at: number } | null = null;
+
+  /** `lastInputAt`: when the input before the prompt arrived, if the caller saw any (typing carried over). */
+  constructor(shownAt: number, allowSession: boolean, lastInputAt = Number.NEGATIVE_INFINITY) {
+    this.gate = new KeyGate(shownAt, allowSession);
+    this.lastInputAt = lastInputAt;
+  }
+
+  /** Input the gate is not fed (a decoded paste, the wheel, focus, a resize, a scrolling key): it cancels a held answer and starts the typing gap again. */
+  other(at: number): void {
+    this.held = null;
+    this.lastInputAt = Math.max(this.lastInputAt, at);
+  }
+
+  /**
+   * One raw chunk at `at`. `gap`, when the caller knows better (input it decoded but did not pass here, several
+   * inputs in one chunk), is the quiet before this one; the shorter of the two counts.
+   */
+  feed(chunk: string, at: number, gap = Number.POSITIVE_INFINITY): KeyStep {
+    const quiet = Math.min(at - this.lastInputAt, gap);
+    this.held = null;
+    this.lastInputAt = Math.max(this.lastInputAt, at);
+    const choice = this.gate.feed(chunk, at);
+    if (!choice) return { kind: "none" };
+    if (choice === "interrupt" || (choice === "deny" && chunk === "\u001b")) return { kind: "now", choice };
+    if (quiet < Math.max(BURST_MS, TYPING_GAP_MS)) return { kind: "none" };
+    this.held = { choice, at };
+    return { kind: "held" };
+  }
+
+  get holding(): boolean {
+    return this.held !== null;
+  }
+
+  /** The held answer, once `HOLD_MS` has passed with nothing else arriving; null before then or if none. */
+  commit(at: number): KeyChoice | null {
+    const h = this.held;
+    if (!h || at - h.at < HOLD_MS) return null;
+    this.held = null;
+    return h.choice;
+  }
+
+  /** Drops any held answer (the prompt closed some other way). */
+  cancel(): void {
+    this.held = null;
+  }
+}
+
 export interface TtyApproverDeps {
   output: NodeJS.WritableStream;
   router: KeyRouter;
@@ -141,17 +207,32 @@ export function createTtyApprover(d: TtyApproverDeps): Approver {
       d.router.attach();
       const signal = d.signal?.() ?? null;
       const choice = await new Promise<KeyChoice | "aborted">((resolve) => {
-        const gate = new KeyGate(now(), suggested !== null);
-        const onAbort = () => {
-          pop();
-          resolve("aborted");
+        // Typing that began before the prompt appeared counts: the router saw it, on its way to the running turn.
+        const keys = new ApprovalKeys(now(), suggested !== null, d.router.lastInputAt ?? undefined);
+        let timer: ReturnType<typeof setTimeout> | null = null;
+        const stopTimer = () => {
+          if (timer) clearTimeout(timer);
+          timer = null;
         };
-        const pop = d.router.push((chunk, at) => {
-          const c = gate.feed(chunk, at);
-          if (!c) return;
+        const finish = (c: KeyChoice | "aborted") => {
+          stopTimer();
+          keys.cancel();
           pop();
           signal?.removeEventListener("abort", onAbort);
           resolve(c);
+        };
+        const onAbort = () => finish("aborted");
+        const pop = d.router.push((chunk, at) => {
+          stopTimer();
+          const step = keys.feed(chunk, at);
+          if (step.kind === "now") return finish(step.choice);
+          if (step.kind !== "held") return;
+          // Held: it answers only if nothing else arrives first (any chunk lands above and stops this timer).
+          timer = setTimeout(() => {
+            timer = null;
+            const c = keys.commit(Number.POSITIVE_INFINITY);
+            if (c) finish(c);
+          }, HOLD_MS);
         });
         if (signal?.aborted) onAbort();
         else signal?.addEventListener("abort", onAbort, { once: true });

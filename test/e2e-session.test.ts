@@ -17,7 +17,7 @@ import { run as cliRun } from "../src/cli.js";
 import { buildContext } from "../src/context.js";
 import { createGate } from "../src/safety/index.js";
 import { startSession, type StartDeps } from "../src/session/start.js";
-import { createTtyApprover, headlessApprover } from "../src/tui/approval.js";
+import { createTtyApprover, headlessApprover, TYPING_GAP_MS } from "../src/tui/approval.js";
 import { KeyRouter } from "../src/tui/keys.js";
 import { style } from "../src/tui/style.js";
 import { Capture, startFakePlatform, stdinFrom, textReply, type FakePlatform, type ScriptedReply, type StreamPart } from "./fake-platform.js";
@@ -335,7 +335,8 @@ test("e2e: the real terminal approver: Enter is not yes, `a` allows the prefix f
   input.write("\r");
   await new Promise((r) => setTimeout(r, 60));
   input.write("\x1b[200~y\x1b[201~"); // a pasted "y"
-  await new Promise((r) => setTimeout(r, 60));
+  // A deliberate key comes after a pause: within the typing gap of the paste it would answer nothing.
+  await new Promise((r) => setTimeout(r, TYPING_GAP_MS + 100));
   input.write("a");
   await promptShown(() => output.text, 2);
   input.write("e");

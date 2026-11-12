@@ -38,8 +38,23 @@ export const HARNESS_OPTIONS = {
   unchecked: { type: "boolean" },
 } as const satisfies Options;
 
+/** The interactive session's interface (`memtro` with no command, in a terminal). */
+export const INTERFACE_OPTIONS = {
+  inline: { type: "boolean" },
+  theme: { type: "string" },
+  "no-mouse": { type: "boolean" },
+} as const satisfies Options;
+
 /** Only without a command: `memtro -p "<task>"` is `memtro run "<task>"`. */
-export const BARE_OPTIONS = { ...HARNESS_OPTIONS, prompt: { type: "string", short: "p" } } as const satisfies Options;
+export const BARE_OPTIONS = { ...HARNESS_OPTIONS, ...INTERFACE_OPTIONS, prompt: { type: "string", short: "p" } } as const satisfies Options;
+
+export const INTERFACE_DETAILS =
+  "Options for the interactive session (memtro, in a terminal):\n" +
+  "  --inline            The plain interface that scrolls like any command's output, instead of the full screen\n" +
+  "                      (also \"ui\": \"inline\" in config.json; chosen by itself in a terminal smaller than 50x12,\n" +
+  "                      with TERM=dumb, or when output is not a terminal)\n" +
+  "  --theme auto|dark|light  The full screen's colours (default auto: follows the terminal's background)\n" +
+  "  --no-mouse          Leave the mouse to the terminal: no wheel scrolling, ordinary text selection";
 
 export const HARNESS_DETAILS =
   "Options for a session (memtro, memtro -p, memtro run):\n" +

@@ -1,0 +1,14 @@
+See the guide|
+(https://docs.example/guide) or|
+https://docs.example/faq. Mail|
+help@example.com. A bare|
+https://status.example/now, in|
+prose.|
+|
+Deceptive:|
+https://bank.example/login|
+(https://evil.example/login).|
+Unsafe: run me (javascript:alert(1))|
+and local (file:///etc/passwd).|
+Reference: the spec|
+(https://spec.example/v2).|

@@ -1,4 +1,4 @@
-import { COMMANDS, findCommand, HARNESS_DETAILS } from "../args.js";
+import { COMMANDS, findCommand, HARNESS_DETAILS, INTERFACE_DETAILS } from "../args.js";
 import { NO_LOGIN_COMMAND, UsageError } from "../errors.js";
 import { VERSION } from "../version.js";
 
@@ -34,6 +34,8 @@ browser to approve this computer and stores a key (90 days). Piped or in CI it e
 MEMTRO_API_KEY there. \`memtro logout\` (or /logout) removes the key; /login signs in again.
 
 ${HARNESS_DETAILS}
+
+${INTERFACE_DETAILS}
 
 Commands:
 ${list}

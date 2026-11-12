@@ -192,6 +192,41 @@ export function reasonText(d: Decision): string {
   return oneLine(d.reason.replace(/^Classifier:\s*/, ""));
 }
 
+/**
+ * The "why" line of an approval: who put it to the person and why, each said once. The gate's reasons often say
+ * who already ("Ask mode: this is put to you.", "…, which is always put to you.", "The classifier did not answer…,
+ * so this is put to you."), so a reason that does is shown alone, and the source words only where the reason
+ * leaves them out. Nothing in the reason is dropped.
+ */
+export function whyText(d: Decision, classifierOn = true): string {
+  const words = sourceWords(d, classifierOn);
+  const raw = oneLine(d.reason ?? "").trim();
+  if (!raw) return words;
+  const reason = reasonText(d);
+  const joined = `${words}: ${reason}`;
+  switch (d.source) {
+    case "mode":
+      if (/^Ask mode\b/i.test(raw)) return words;
+      return /put to you|nothing is judged/i.test(raw) ? safetyCheck(raw) : joined;
+    case "rule":
+      return /always (put to you|asked)/i.test(raw) ? raw : joined;
+    case "session":
+      return /^You allowed\b/.test(raw) ? raw : joined;
+    case "classifier": {
+      const tooLong = /^Classifier would allow it, but (.+?)\.?\s*\(Classifier:\s*(.*)\)$/s.exec(raw);
+      if (tooLong) return `the safety check would allow it, but ${tooLong[1]}${tooLong[2] ? `; its reason: ${tooLong[2]}` : ""}`;
+      return joined;
+    }
+    case "fallback":
+      return /put to you/i.test(raw) ? safetyCheck(raw) : joined;
+  }
+}
+
+/** The gate says "classifier"; everything a person reads says "safety check". */
+function safetyCheck(text: string): string {
+  return text.replace(/\bthe classifier\b/g, "the safety check").replace(/\bThe classifier\b/g, "The safety check").replace(/\bno classifier\b/g, "no safety check");
+}
+
 export function decisionLine(d: Decision, answer: Answer | undefined, st: Style): string {
   if (answer) {
     if (answer.kind === "deny") return st.red(`  ✗ not run${answer.note ? `: ${oneLine(answer.note)}` : " (you said no)"}`);

@@ -1,0 +1,14 @@
+Install and run:|
+|
+  console                           |
+  $ npm install -g memtro           |
+  $ memtro --version                |
+  0.2.1                             |
+                                    |
+|
+  hello.py · python                 |
+  def greet(name: str) -> str:      |
+      """Say hello."""              |
+      return f"Hello, {name}!"  # a |
+↪  greeting                         |
+                                    |

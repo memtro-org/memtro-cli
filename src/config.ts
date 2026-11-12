@@ -63,6 +63,12 @@ export interface ConfigFile {
   actions?: unknown;
   /** false turns off the "a newer memtro is available" line at the start of a session. */
   updateCheck?: unknown;
+  /** The interactive session's interface: "full" (the default in a big enough terminal) or "inline". */
+  ui?: unknown;
+  /** The full-screen interface's colours: "auto" (follow the terminal's background), "dark" or "light". */
+  theme?: unknown;
+  /** false: the full-screen interface leaves the mouse to the terminal (no wheel scrolling, plain selection). */
+  mouse?: unknown;
   /** Anything else in the file is kept as it was when the file is rewritten. */
   [other: string]: unknown;
 }
@@ -221,4 +227,32 @@ export function updateCheckSetting(config: ConfigFile, where = "config.json"): b
   if (v === undefined) return undefined;
   if (typeof v !== "boolean") throw new UsageError(`${where}: updateCheck must be true or false; got ${JSON.stringify(v)}.`);
   return v;
+}
+
+export interface InterfaceSettings {
+  ui?: "full" | "inline";
+  theme?: "auto" | "dark" | "light";
+  mouse?: boolean;
+}
+
+/**
+ * `ui`, `theme` and `mouse` (top level, beside `mode`): how the interactive session looks. A value of the wrong kind
+ * is a usage error naming the key, like the harness settings.
+ */
+export function interfaceSettings(config: ConfigFile, where = "config.json"): InterfaceSettings {
+  const out: InterfaceSettings = {};
+  const bad = (key: string, want: string, got: unknown) => new UsageError(`${where}: ${key} must be ${want}; got ${JSON.stringify(got)}.`);
+  if (config.ui !== undefined) {
+    if (config.ui !== "full" && config.ui !== "inline") throw bad("ui", '"full" or "inline"', config.ui);
+    out.ui = config.ui;
+  }
+  if (config.theme !== undefined) {
+    if (config.theme !== "auto" && config.theme !== "dark" && config.theme !== "light") throw bad("theme", '"auto", "dark" or "light"', config.theme);
+    out.theme = config.theme;
+  }
+  if (config.mouse !== undefined) {
+    if (typeof config.mouse !== "boolean") throw bad("mouse", "true or false", config.mouse);
+    out.mouse = config.mouse;
+  }
+  return out;
 }
