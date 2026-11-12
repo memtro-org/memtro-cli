@@ -53,8 +53,9 @@ test("golden styles: headings, emphasis, tasks, quote bar, links, code roles, di
   assert.equal(stylesOf(blocks, "│")[0]?.fg, "muted");
 
   const links = md(readFileSync(join(dir, "links.md"), "utf8"), 60);
-  // A link's text carries no address: only the address shown after it opens, so what opens is what is shown.
-  assert.equal(stylesOf(links, "the guide")[0]?.link, undefined);
+  // A link's text opens the same address as the one shown after it, unless the text reads as another address.
+  assert.equal(stylesOf(links, "the guide")[0]?.link, "https://docs.example/guide");
+  assert.equal(stylesOf(links, "the spec")[0]?.link, "https://spec.example/v2");
   assert.equal(stylesOf(links, "the guide")[0]?.underline, true);
   assert.equal(stylesOf(links, "(https://docs.example/guide)")[0]?.link, "https://docs.example/guide");
   assert.equal(stylesOf(links, "run me")[0]?.link, undefined);

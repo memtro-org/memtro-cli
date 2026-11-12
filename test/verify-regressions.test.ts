@@ -200,9 +200,11 @@ test("full screen: a message queued behind a turn the person stops is not sent b
   const done = app.run();
   const k = (name: string, text?: string): Input => ({ type: "key", name, ctrl: false, alt: false, shift: false, ...(text ? { text } : {}) });
   for (const ch of "first") screen.feed(k(ch, ch));
+  screen.advance(100); // a person's Enter, not the end of a burst
   screen.feed(k("enter"));
   await new Promise((r) => setTimeout(r, 20));
   for (const ch of "second") screen.feed(k(ch, ch));
+  screen.advance(100);
   screen.feed(k("enter"));
   assert.equal(app.state.queued, "second");
   screen.feed(k("escape"));
@@ -245,10 +247,12 @@ test("full screen: a command queued behind a running turn runs as a command when
   const done = app.run();
   const k = (name: string, text?: string): Input => ({ type: "key", name, ctrl: false, alt: false, shift: false, ...(text ? { text } : {}) });
   for (const ch of "go") screen.feed(k(ch, ch));
+  screen.advance(100);
   screen.feed(k("enter"));
   await new Promise((r) => setTimeout(r, 20));
   for (const ch of "/help") screen.feed(k(ch, ch));
   screen.feed(k("escape")); // hide the menu, keep the text
+  screen.advance(100);
   screen.feed(k("enter"));
   assert.equal(app.state.queued, "/help");
   finish();

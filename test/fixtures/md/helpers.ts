@@ -55,3 +55,22 @@ export function stylesOf(lines: Line[], needle: string): (Style | undefined)[] {
   for (const l of lines) for (const s of l) if (s.text.includes(needle)) out.push(s.style);
   return out;
 }
+
+/**
+ * Milliseconds of CPU the main thread spent running `fn` (`process.threadCpuUsage`, Node 23.9 and later; wall time
+ * where it is missing). The scaling checks measure this rather than wall time: on a loaded machine a long render is
+ * preempted more often than a short one, which inflates a wall-time ratio, and the whole process's CPU would count
+ * the garbage collector's and compiler's helper threads, which come in bursts.
+ */
+export function cpuMs(fn: () => void): number {
+  const thread = (process as { threadCpuUsage?: (prev?: NodeJS.CpuUsage) => NodeJS.CpuUsage }).threadCpuUsage;
+  if (!thread) {
+    const t = performance.now();
+    fn();
+    return performance.now() - t;
+  }
+  const start = thread.call(process);
+  fn();
+  const d = thread.call(process, start);
+  return (d.user + d.system) / 1000;
+}

@@ -200,7 +200,8 @@ export function handleInput(state: AppState, input: Input, ctx: KeyContext): Han
 
 /** Enter with no menu in the way: a command, a message, or a message queued behind the running turn. */
 function submit(state: AppState, ctx: KeyContext): Handled {
-  const text = state.editor.text;
+  // Newlines at the end are dropped: the one an Enter in a burst left (enter.ts) before the Enter that sent it.
+  const text = state.editor.text.replace(/\n+$/, "");
   if (!text.trim()) return done(state);
   if (state.running) {
     if (state.queued !== null) return done({ ...state, notice: { text: "A message is already queued; Esc twice takes it back.", tone: "warning", at: ctx.now } });

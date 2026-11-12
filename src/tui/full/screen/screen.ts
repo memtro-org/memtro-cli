@@ -5,6 +5,7 @@ import { darkTheme, detectDepth, isDarkBackground, parseOscColour } from "./colo
 import { diffFrame, initialWriterState } from "./diff.js";
 import { CellFrame, type Cell } from "./frame.js";
 import { InputDecoder, type Reply } from "./input.js";
+import { applyEnterRule, EnterRule } from "../../enter.js";
 
 /**
  * The full screen: the alternate screen, raw keys, and a frame painted by difference.
@@ -190,6 +191,8 @@ export function createScreen(streams: { stdin: NodeJS.ReadStream; stdout: NodeJS
     }
   };
   const decoder = new InputDecoder(onReply);
+  // An Enter that is part of a burst of input (an unmarked paste) is a newline, not a send: see enter.ts.
+  const enterRule = new EnterRule();
 
   function probeDone() {
     if (!probing) return;
@@ -219,7 +222,7 @@ export function createScreen(streams: { stdin: NodeJS.ReadStream; stdout: NodeJS
     const gap = now - lastInputAt;
     lastInputAt = now;
     const data = typeof chunk === "string" ? Buffer.from(chunk, "utf8") : chunk;
-    const inputs = decoder.feed(data);
+    const inputs = applyEnterRule(enterRule, decoder.feed(data), now);
     armTimers();
     if (inputs.length) dispatch(inputs, gap);
   };
@@ -233,14 +236,14 @@ export function createScreen(streams: { stdin: NodeJS.ReadStream; stdout: NodeJS
     if (p === "escape" || p === "partial") {
       escTimer = setTimeout(() => {
         escTimer = null;
-        const inputs = decoder.flush();
+        const inputs = applyEnterRule(enterRule, decoder.flush(), Date.now());
         if (inputs.length) dispatch(inputs, Date.now() - lastInputAt);
       }, ESCAPE_MS);
       escTimer.unref?.();
     } else if (p === "paste") {
       pasteTimer = setTimeout(() => {
         pasteTimer = null;
-        const inputs = decoder.endPaste();
+        const inputs = applyEnterRule(enterRule, decoder.endPaste(), Date.now());
         if (inputs.length) dispatch(inputs, Date.now() - lastInputAt);
       }, PASTE_IDLE_MS);
       pasteTimer.unref?.();
@@ -453,9 +456,12 @@ function safeSize(out: TtyOut): [number, number] | null {
 // ---------------------------------------------------------------------------------------------------------------
 
 export interface TestScreen extends FullScreen {
-  /** Delivers inputs as one arrival (more than one: a burst, so `sinceInput()` is 0 for each). */
+  /**
+   * Delivers inputs as one arrival (more than one: a burst, so `sinceInput()` is 0 for each). As on the real screen,
+   * an Enter in the same arrival as typed text, or less than `PASTE_ENTER_MS` of the fake clock after it, is a newline.
+   */
   feed(...inputs: Input[]): void;
-  /** Delivers raw bytes through the real decoder (then flushes a lone ESC). */
+  /** Delivers raw bytes through the real decoder as one chunk (then flushes a lone ESC). */
   feedBytes(bytes: string | Buffer): void;
   /** Moves the fake clock that `sinceInput` reads. */
   advance(ms: number): void;
@@ -490,8 +496,11 @@ export function createTestScreen(width: number, height: number, options: { theme
   let last = new CellFrame(w, h, "page");
   const state = initialWriterState();
   const decoder = new InputDecoder();
+  const enterRule = new EnterRule();
 
-  const dispatch = (inputs: Input[]) => {
+  /** One arrival, as the real screen delivers it: an Enter that is part of a burst is a newline (enter.ts). */
+  const dispatch = (arrived: Input[]) => {
+    const inputs = applyEnterRule(enterRule, arrived, clock);
     const gap = clock - lastInputAt;
     lastInputAt = clock;
     gapNow = inputs.length > 1 ? 0 : gap;

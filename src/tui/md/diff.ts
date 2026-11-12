@@ -133,7 +133,7 @@ function chunk(spans: Span[], width: number, m: Measurer): Line[] {
       continue;
     }
     for (const g of m.graphemes(s.text)) {
-      const gw = m.width(g);
+      const gw = m.cell(g);
       if (w + gw > width && w > 0) {
         out.push(cur);
         cur = [];

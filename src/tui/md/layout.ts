@@ -218,7 +218,7 @@ function chunkLine(line: Line, width: number, m: Measurer): Line[] {
     }
     let text = "";
     for (const g of m.graphemes(s.text)) {
-      const gw = m.width(g);
+      const gw = m.cell(g);
       if (w + gw > width) {
         if (text) cur.push({ text, style: s.style });
         text = "";

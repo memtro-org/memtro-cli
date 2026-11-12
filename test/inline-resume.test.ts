@@ -51,11 +51,17 @@ test("inline /resume does not offer the session in progress", async () => {
     assert.match(stdout.text, re);
   };
   await until(/\/help for commands/);
-  stdin.write("the current work\r");
+  // Typed, then Enter on its own: an Enter in the same chunk as the text would be a newline (an unmarked paste).
+  // A slow machine only lengthens the pause, so real time is safe here.
+  stdin.write("the current work");
+  await new Promise((r) => setTimeout(r, 60));
+  stdin.write("\r");
   await until(/Hello back\./);
   await new Promise((r) => setTimeout(r, 50));
   const before = stdout.text.length;
-  stdin.write("/resume\r");
+  stdin.write("/resume");
+  await new Promise((r) => setTimeout(r, 60));
+  stdin.write("\r");
   await until(/Which one/);
   const listed = stdout.text.slice(before);
   assert.match(listed, /1 {2}the earlier work/);

@@ -99,7 +99,7 @@ test("inline HTML maps to its Markdown equivalent", () => {
   assert.equal(stylesOf(lines, "st")[0]?.bold, true);
   assert.equal(stylesOf(lines, "x < y")[0]?.fg, "synString");
   assert.equal(stylesOf(lines, "gone")[0]?.strike, true);
-  assert.equal(stylesOf(lines, "a")[0]?.link, undefined, "the text of a link carries no address");
+  assert.equal(stylesOf(lines, "a")[0]?.link, "https://a.example/", "the text of a link opens the address shown after it");
   assert.equal(stylesOf(lines, "(https://a.example)")[0]?.link, "https://a.example/");
 });
 

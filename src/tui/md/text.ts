@@ -86,7 +86,7 @@ export function cutLine(line: Line, width: number, m: Measurer): Line {
     }
     let text = "";
     for (const g of m.graphemes(span.text)) {
-      const gw = m.width(g);
+      const gw = m.cell(g);
       if (used + gw > width) break;
       text += g;
       used += gw;
@@ -166,23 +166,26 @@ function tokenize(pieces: Piece[], m: Measurer): Token[] {
         continue;
       }
       const run = match[2]!;
-      if (NARROW_ONLY.test(run) || m.width(run) === m.graphemes(run).length) {
+      if (NARROW_ONLY.test(run)) {
         const w = forceNew || !word ? startWord() : (word as Word);
         w.parts.push({ text: run, style: p.style });
-        w.width += m.width(run);
+        w.width += run.length;
         continue;
       }
-      // Mixed: every wide grapheme is a word of its own.
+      // Anything else is segmented once and measured a grapheme at a time (never re-segmenting a grapheme: that
+      // made 100k characters of binary junk cost a quarter of a second). Every wide grapheme is a word of its own.
       let narrow = "";
+      let narrowW = 0;
       const flushNarrow = () => {
         if (!narrow) return;
         const w = forceNew || !word ? startWord() : (word as Word);
         w.parts.push({ text: narrow, style: p.style });
-        w.width += m.width(narrow);
+        w.width += narrowW;
         narrow = "";
+        narrowW = 0;
       };
       for (const g of m.graphemes(run)) {
-        const gw = m.width(g);
+        const gw = m.cell(g);
         if (gw >= 2) {
           flushNarrow();
           forceNew = true;
@@ -190,7 +193,10 @@ function tokenize(pieces: Piece[], m: Measurer): Token[] {
           w.parts.push({ text: g, style: p.style });
           w.width += gw;
           forceNew = true;
-        } else narrow += g;
+        } else {
+          narrow += g;
+          narrowW += gw;
+        }
       }
       flushNarrow();
     }
@@ -244,7 +250,7 @@ export function wrapPieces(pieces: Piece[], width: number, m: Measurer): Line[] 
       curW += gapW;
     }
     const gs: { g: string; style?: Style; w: number }[] = [];
-    for (const part of tok.parts) for (const g of m.graphemes(part.text)) gs.push({ g, style: part.style, w: m.width(g) });
+    for (const part of tok.parts) for (const g of m.graphemes(part.text)) gs.push({ g, style: part.style, w: m.cell(g) });
     let i = 0;
     while (i < gs.length) {
       let room = w - curW;

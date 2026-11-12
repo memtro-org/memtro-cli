@@ -195,10 +195,21 @@ export interface TtyApproverDeps {
   /** The running turn's signal: when it is aborted (Esc, Ctrl-C, elsewhere) an open prompt closes itself as a refusal. */
   signal?: () => AbortSignal | null;
   now?: () => number;
+  /**
+   * Runs `fn` after `ms`; returns a function that cancels it. The hold's timer: a test passes its own, so a busy
+   * machine stretching a real timer cannot change what the test sees.
+   */
+  setTimer?: (fn: () => void, ms: number) => () => void;
 }
+
+const realTimer = (fn: () => void, ms: number): (() => void) => {
+  const t = setTimeout(fn, ms);
+  return () => clearTimeout(t);
+};
 
 export function createTtyApprover(d: TtyApproverDeps): Approver {
   const now = d.now ?? Date.now;
+  const setTimer = d.setTimer ?? realTimer;
   return {
     async ask(call, decision, suggested): Promise<Answer> {
       d.beforePrompt?.();
@@ -209,9 +220,9 @@ export function createTtyApprover(d: TtyApproverDeps): Approver {
       const choice = await new Promise<KeyChoice | "aborted">((resolve) => {
         // Typing that began before the prompt appeared counts: the router saw it, on its way to the running turn.
         const keys = new ApprovalKeys(now(), suggested !== null, d.router.lastInputAt ?? undefined);
-        let timer: ReturnType<typeof setTimeout> | null = null;
+        let timer: (() => void) | null = null;
         const stopTimer = () => {
-          if (timer) clearTimeout(timer);
+          timer?.();
           timer = null;
         };
         const finish = (c: KeyChoice | "aborted") => {
@@ -228,7 +239,7 @@ export function createTtyApprover(d: TtyApproverDeps): Approver {
           if (step.kind === "now") return finish(step.choice);
           if (step.kind !== "held") return;
           // Held: it answers only if nothing else arrives first (any chunk lands above and stops this timer).
-          timer = setTimeout(() => {
+          timer = setTimer(() => {
             timer = null;
             const c = keys.commit(Number.POSITIVE_INFINITY);
             if (c) finish(c);

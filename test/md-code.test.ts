@@ -4,7 +4,7 @@ import { test } from "node:test";
 import type { Line, Role } from "../src/tui/full/types.js";
 import { highlightCode } from "../src/tui/md/index.js";
 import { findLanguage, parseInfo } from "../src/tui/md/languages.js";
-import { md, plain, width } from "./fixtures/md/helpers.js";
+import { cpuMs, md, plain, width } from "./fixtures/md/helpers.js";
 
 /** The role given to the first span whose text is exactly `token`. */
 function roleOf(lines: Line[], token: string): Role | undefined | "missing" {
@@ -147,16 +147,44 @@ test("the highlighter cleans its input: escape sequences and controls are shown,
 });
 
 test("a long line takes linear time, whatever the language", () => {
-  const nasty = ['"'.repeat(100_000), "/*".repeat(50_000), "${".repeat(50_000), "<".repeat(100_000), `${"a".repeat(99_000)} "x /* <a`];
+  // Each line at a quarter of its size and at full size (100k characters): four times the input may take about four
+  // times as long, never sixteen (the bound is 11). Timed as the cheapest of two, with the smaller time floored at
+  // 8 ms so a render of a millisecond does not turn noise into a ratio. Both sizes run on the same machine moments apart, so a slow shared
+  // runner changes the times but not the ratio; the absolute bound is only a backstop against a hang.
+  const nasty: ((k: number) => string)[] = [
+    (k) => '"'.repeat(25_000 * k),
+    (k) => "/*".repeat(12_500 * k),
+    (k) => "${".repeat(12_500 * k),
+    (k) => "<".repeat(25_000 * k),
+    (k) => `${"a".repeat(24_750 * k)} "x /* <a`,
+  ];
+  // CPU milliseconds of the main thread (`cpuMs`), not wall time: a loaded machine preempts the longer run more often.
+  const fastest = (s: string, lang: string) => {
+    let best = Number.POSITIVE_INFINITY;
+    for (let r = 0; r < 2; r++) best = Math.min(best, cpuMs(() => assert.equal(highlightCode(s, lang).length, 1)));
+    return best;
+  };
+  const slow: string[] = [];
   for (const lang of ["ts", "json", "python", "sh", "console", "go", "rust", "sql", "yaml", "toml", "html", "css", "md", "dockerfile", "diff"]) {
-    for (const s of nasty) {
-      const t = performance.now();
-      const lines = highlightCode(s, lang);
-      const ms = performance.now() - t;
-      assert.equal(lines.length, 1);
-      assert.ok(ms < 500, `${lang} took ${ms.toFixed(0)} ms`);
+    for (const [i, grow] of nasty.entries()) {
+      const small = grow(1);
+      const large = grow(4);
+      const a = fastest(small, lang);
+      const b = fastest(large, lang);
+      assert.ok(b < 5000, `${lang} #${i} took ${b.toFixed(0)} ms`);
+      if (b / Math.max(a, 8) > 11) {
+        // One retry: a pause during the larger run is the usual cause of an outlier.
+        let a2 = Number.POSITIVE_INFINITY;
+        let b2 = Number.POSITIVE_INFINITY;
+        for (let r = 0; r < 3; r++) {
+          a2 = Math.min(a2, fastest(small, lang));
+          b2 = Math.min(b2, fastest(large, lang));
+        }
+        if (b2 / Math.max(a2, 8) > 11) slow.push(`${lang} #${i}: ${a2.toFixed(1)} ms, then ${b2.toFixed(1)} ms at four times the size`);
+      }
     }
   }
+  assert.deepEqual(slow, [], "superlinear highlighting");
 });
 
 test("info strings: language aliases, titles, file names, line ranges", () => {

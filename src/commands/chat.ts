@@ -153,8 +153,12 @@ async function chatInline(ctx: Context, deps: ChatDeps): Promise<number> {
       try {
         for await (const e of events(controller.signal)) {
           r.event(e);
-          // Waiting again after anything but the answer itself: say for what.
-          if (e.type === "tool-call") spinner.start("Checking…");
+          // Waiting again after anything but the answer itself: say for what. Never while a line of the answer is
+          // still open (an answer's last line has no newline until the turn ends): the spinner draws by clearing
+          // the line it is on, which would erase that text (a usage event after the answer did exactly that).
+          if (r.lineOpen) {
+            // nothing: the line is ended (and the spinner may start) by the next tool line or the turn's end
+          } else if (e.type === "tool-call") spinner.start("Checking…");
           else if (e.type === "tool-decision") spinner.start("Running…");
           else if (e.type === "tool-progress") spinner.start(r.lastProgress || "Running…");
           else if (e.type !== "text" && e.type !== "thinking" && e.type !== "turn-end" && e.type !== "error") spinner.start("Working…");

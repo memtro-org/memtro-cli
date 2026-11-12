@@ -2,13 +2,15 @@ import { createHash } from "node:crypto";
 import { appendFileSync, chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
+import { ChunkArrivals, EnterRule } from "./enter.js";
 import { PASTE_END, PASTE_START, type TtyIn } from "./keys.js";
 
 /**
  * The prompt the person types at, on `node:readline`.
  *
  * Enter sends. A line ending in `\` carries on onto the next line, and pasted text (bracketed paste) keeps its
- * newlines rather than sending each line. Ctrl-D on an empty line, or Ctrl-C twice within two seconds, leaves;
+ * newlines rather than sending each line. So does an unmarked paste: an Enter in the same chunk as typed text, or
+ * just after it, is a newline (the rule in enter.ts, the same as the full-screen interface's); Enter on its own sends. Ctrl-D on an empty line, or Ctrl-C twice within two seconds, leaves;
  * Ctrl-C once clears what was typed. History is kept per directory beside the sessions, owner-only, because what
  * people type at a coding agent includes things they would not post.
  */
@@ -86,6 +88,8 @@ export class Composer {
   private history: string[];
   private oldestFirst: string[];
   private lastInterrupt = 0;
+  /** Kept across prompts: a burst does not end because a message was sent. */
+  private readonly enterRule = new EnterRule();
 
   constructor(private readonly o: ComposerOptions) {
     this.oldestFirst = o.historyPath ? loadHistory(o.historyPath) : [];
@@ -109,6 +113,7 @@ export class Composer {
       const parts: string[] = [];
       let pasting = false;
       let done = false;
+      const enters = enterJudge(o.input, this.enterRule, now);
 
       const onKey = (_s: string | undefined, key: { name?: string; sequence?: string } | undefined) => {
         if (key?.name === "paste-start" || key?.sequence === PASTE_START) pasting = true;
@@ -120,6 +125,7 @@ export class Composer {
         if (done) return;
         done = true;
         o.input.off("keypress", onKey);
+        enters.stop();
         rl.close();
         if (value !== null && keepInHistory(value)) this.remember(value);
         resolve(value);
@@ -130,6 +136,13 @@ export class Composer {
           parts.push(line);
           return;
         }
+        if (!enters.sends()) {
+          // Part of a burst (an unmarked paste): a newline, never a send.
+          parts.push(line);
+          rl.setPrompt(o.continuation);
+          rl.prompt();
+          return;
+        }
         if (line.endsWith("\\")) {
           parts.push(line.slice(0, -1));
           rl.setPrompt(o.continuation);
@@ -137,7 +150,8 @@ export class Composer {
           return;
         }
         parts.push(line);
-        finish(parts.join("\n"));
+        // The newline a burst left before the Enter that sends it is not part of the message.
+        finish(parts.join("\n").replace(/\n+$/, ""));
       });
       rl.on("SIGINT", () => {
         const t = now();
@@ -169,14 +183,21 @@ export class Composer {
   }
 }
 
-/** One line of text in cooked mode (the approval prompt's note, a number from a list). Empty on Ctrl-C or Ctrl-D. */
-export function readOneLine(input: TtyIn, output: NodeJS.WritableStream, prompt: string): Promise<string> {
+/**
+ * One line of text in cooked mode (the approval prompt's note, a number from a list). Empty on Ctrl-C or Ctrl-D.
+ * On a terminal, an Enter that is part of a burst (an unmarked paste, enter.ts) does not send: the pasted lines are
+ * joined with spaces and the person presses Enter to send them. Piped input is read as it always was.
+ */
+export function readOneLine(input: TtyIn, output: NodeJS.WritableStream, prompt: string, now: () => number = Date.now): Promise<string> {
   return new Promise((resolve) => {
     const rl = createInterface({ input, output, terminal: Boolean(input.isTTY), historySize: 0 });
+    const enters = input.isTTY ? enterJudge(input, new EnterRule(), now) : null;
+    const parts: string[] = [];
     let settled = false;
     const done = (v: string) => {
       if (settled) return;
       settled = true;
+      enters?.stop();
       rl.close();
       resolve(v);
     };
@@ -185,6 +206,33 @@ export function readOneLine(input: TtyIn, output: NodeJS.WritableStream, prompt:
       done("");
     });
     rl.on("close", () => done(""));
-    rl.question(prompt, (answer) => done(answer));
+    rl.on("line", (line) => {
+      parts.push(line);
+      if (enters && !enters.sends()) return;
+      done(parts.filter((p) => p !== "").join(" "));
+    });
+    rl.setPrompt(prompt);
+    rl.prompt();
   });
+}
+
+/**
+ * Judges each raw chunk of a readline prompt's input before readline sees it (the listener goes first), so the
+ * `line` events that chunk causes know whether its Enter sends. Every Enter in one chunk is judged alike.
+ */
+function enterJudge(input: TtyIn, rule: EnterRule, now: () => number): { sends(): boolean; stop(): void } {
+  const arrivals = new ChunkArrivals();
+  let sends = true;
+  const onData = (data: Buffer | string) => {
+    const verdicts = rule.judge(arrivals.of(typeof data === "string" ? data : data.toString("utf8")), now());
+    // A line end inside paste marks is pasted too (the composer also tracks the marks; a one-line field does not).
+    sends = !arrivals.touchedPaste && (verdicts.length ? verdicts[0]! : true);
+  };
+  input.prependListener("data", onData);
+  return {
+    sends: () => sends,
+    stop: () => {
+      input.off("data", onData);
+    },
+  };
 }

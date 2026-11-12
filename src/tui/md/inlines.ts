@@ -125,6 +125,8 @@ class Parser {
   private runs: Map<number, number[]> | null = null;
   private runCursor = new Map<number, number>();
   private noCommentClose = false;
+  /** Where the next `}` at or after the last brace looked from is, -1 for none left, -2 before the first look. */
+  private closeBraceAt = -2;
 
   constructor(
     private readonly src: string,
@@ -576,9 +578,14 @@ class Parser {
   private brace(): void {
     const src = this.src;
     const limit = Math.min(src.length, this.pos + 2000);
-    const end = this.opts.ctx.budget.n > 0 ? skipExpression(src, this.pos, limit) : -1;
+    // No `}` before the limit: it cannot close, and nothing is scanned (a page of `{a ` would otherwise scan 2000
+    // characters per brace).
+    if (this.closeBraceAt !== -1 && this.closeBraceAt < this.pos) this.closeBraceAt = src.indexOf("}", this.pos);
+    const reachable = this.closeBraceAt >= 0 && this.closeBraceAt < limit;
+    const end = reachable && this.opts.ctx.budget.n > 0 ? skipExpression(src, this.pos, limit) : -1;
     if (end < 0) {
-      this.spend(Math.min(200, limit - this.pos));
+      // A scan that failed cost up to the limit, and is charged that.
+      if (reachable) this.spend(limit - this.pos);
       this.buf += "{";
       this.pos++;
       return;

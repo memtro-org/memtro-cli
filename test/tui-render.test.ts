@@ -233,3 +233,17 @@ test("terminal guard: every way out restores the terminal", () => {
   g.dispose();
   assert.equal(handlers.size, 0);
 });
+
+test("renderer: lineOpen says an answer line was written without its newline (the inline spinner must not clear it)", () => {
+  const r = new TurnRenderer(() => {}, { style: plain, thinking: "collapsed", shared: true, mode: "auto" }, "auto");
+  assert.equal(r.lineOpen, false);
+  r.event({ type: "text", delta: "Reply number 1." });
+  assert.equal(r.lineOpen, true, "the answer's last line is open");
+  r.event({ type: "usage", step: { input: 10, output: 2 }, session: { input: 10, output: 2 }, contextUsed: 12, contextLimit: 200_000 });
+  assert.equal(r.lineOpen, true, "a usage event does not end it");
+  r.event({ type: "tool-call", call: call() });
+  assert.equal(r.lineOpen, false, "a tool line ends it first");
+  r.event({ type: "text", delta: "More." });
+  r.finish();
+  assert.equal(r.lineOpen, false);
+});

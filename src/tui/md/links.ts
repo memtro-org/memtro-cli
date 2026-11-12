@@ -104,3 +104,80 @@ export function trimBareUrl(candidate: string): string {
     if (url === before) return url;
   }
 }
+
+// Anything that could stand for a dot in a host name (IDNA maps the ideographic and fullwidth full stops to ".").
+const DOTS = /[。．｡]/g;
+// Characters that take no space or reorder text: removed before looking, so "pay​pal.com" reads as paypal.com.
+const INVISIBLE = /[­͏؜ᅟᅠ឴឵᠎​-‏‪-‮⁠-⁯ㅤ︀-️﻿ﾠ]/gu;
+/** A scheme followed by `//`, or one of the schemes that take none, anywhere in the text. */
+const SCHEME = /[a-z][a-z0-9+.-]*:\/\/\S*|\b(?:mailto|javascript|vbscript|data|file|tel|sms|callto|ftp):\S*/giu;
+/** Something@something.something: an e-mail address (or userinfo in front of a host). */
+const EMAIL = /[^\s@<>()[\]]+@[^\s@<>()[\]]+\.[^\s@<>()[\]]*[^\s@<>()[\].]/gu;
+/** A host name (two or more labels, the last alphabetic or punycode) with whatever path follows it. */
+const HOST = /(?<![\p{L}\p{N}_@.-])(?:[\p{L}\p{N}](?:[\p{L}\p{N}_-]*[\p{L}\p{N}])?\.)+(?:\p{L}{2,}|xn--[a-z0-9-]+)(?![\p{L}\p{N}_-])(?:[/?#:][^\s]*)?/giu;
+/** An IPv4 or bracketed IPv6 address, or localhost. */
+const OTHER_HOST = /(?<![\p{L}\p{N}.])\d{1,3}(?:\.\d{1,3}){3}(?![\p{N}])|\[[0-9a-f:.]+\]|\blocalhost\b/giu;
+
+function parseHttp(text: string): URL | null {
+  try {
+    const u = new URL(text);
+    return u.protocol === "http:" || u.protocol === "https:" ? u : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Whether a link's label may itself open the link, as well as the address printed after it.
+ *
+ * Not when the label reads as an address that is not where the link goes: a URL with any scheme, a bare host
+ * (`good.example`, `good.example/login`, with any case, a trailing slash or dot, fullwidth dots, invisible characters
+ * inside, or a look-alike that a browser would contact as punycode), an e-mail address, an IP address or localhost,
+ * alone or among other words ("log in at paypal.com"). Text that names the destination itself (the same host, or
+ * the same full address when it gives a path or a scheme, or the same e-mail address for a mailto link) may link.
+ * Only http, https and mailto addresses are ever linked. When in doubt, the label does not link.
+ */
+export function labelMayLink(label: string, addr: Address): boolean {
+  const link = addr.link;
+  if (!link) return false;
+  const text = label.normalize("NFKC").replace(INVISIBLE, "").replace(DOTS, ".");
+  if (!text.trim()) return false;
+  const dest = parseHttp(link);
+  const mailto = link.startsWith("mailto:") ? link.slice("mailto:".length).toLowerCase() : null;
+
+  for (const m of text.matchAll(OTHER_HOST)) if (m[0]) return false;
+
+  for (const m of text.matchAll(SCHEME)) {
+    const said = trimBareUrl(m[0]);
+    if (/^mailto:/i.test(said)) {
+      if (mailto === null || said.slice("mailto:".length).toLowerCase() !== mailto) return false;
+      continue;
+    }
+    const u = parseHttp(said);
+    if (!u || !dest || u.href !== dest.href || /xn--/i.test(u.hostname) || /[^\x00-\x7f]/.test(said)) return false;
+  }
+
+  // E-mail addresses first, and blanked out so their host part is not read again as a host.
+  let rest = text;
+  for (const m of text.matchAll(EMAIL)) {
+    const said = trimBareUrl(m[0]).replace(/^mailto:/i, "").toLowerCase();
+    if (mailto === null || said !== mailto) return false;
+    rest = rest.replace(m[0], " ");
+  }
+  // Hosts, outside what the scheme pass already judged.
+  rest = rest.replace(SCHEME, " ");
+  for (const m of rest.matchAll(HOST)) {
+    const said = trimBareUrl(m[0]);
+    if (!dest) return false;
+    const u = parseHttp(`http://${said}`);
+    if (!u || u.hostname !== dest.hostname) return false;
+    // A host written in letters that only look like ASCII ones goes where it says, but reads as somewhere else.
+    if (/xn--/i.test(u.hostname) || /[^\x00-\x7f]/.test(said)) return false;
+    // A path, query or fragment in the text must be the destination's own; a port must match too.
+    const tail = said.slice(said.search(/[/?#:]/) >= 0 ? said.search(/[/?#:]/) : said.length);
+    if (tail && tail !== "/") {
+      if (u.port !== dest.port || u.pathname !== dest.pathname || u.search !== dest.search || u.hash !== dest.hash) return false;
+    }
+  }
+  return true;
+}

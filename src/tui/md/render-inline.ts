@@ -2,7 +2,7 @@
 import type { Style } from "../full/types.js";
 import type { Ctx } from "./ast.js";
 import { type Inline, parseInlines, plainText } from "./inlines.js";
-import { address, textIsAddress } from "./links.js";
+import { address, labelMayLink, textIsAddress } from "./links.js";
 import { mergeStyle, type Piece } from "./text.js";
 
 export const CODE_STYLE: Style = { fg: "synString" };
@@ -73,10 +73,12 @@ export function inlinePieces(inl: Inline[], base: Style | undefined): Piece[] {
             out.push({ text: email || addr.shown, style: mergeStyle(style, linked) });
             break;
           }
-          // The label is styled as a link but carries no address: only the address printed after it opens anything,
-          // so what a terminal opens is always exactly what is shown ("[https://good.example](https://evil.example)"
-          // cannot make the text "https://good.example" open the other place).
-          walk(x.c, mergeStyle(style, LINK_TEXT_STYLE));
+          // The label opens the same address as the one printed after it, unless the label itself reads as an
+          // address or host that is not that destination ("[https://good.example](https://evil.example)", "log in at
+          // paypal.com"): then only the printed address opens anything, so what a terminal opens is always what is
+          // shown. A label holding an image never links (the image's own address is printed inside it).
+          const labelLinks = !hasImage && labelMayLink(text, addr);
+          walk(x.c, mergeStyle(style, labelLinks ? linked : LINK_TEXT_STYLE));
           out.push({ text: " ", style });
           out.push({ text: `(${addr.shown})`, style: mergeStyle(style, { ...ADDRESS_STYLE, ...(addr.link ? { link: addr.link } : {}) }) });
           break;

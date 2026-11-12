@@ -5,7 +5,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { Line } from "../src/tui/full/types.js";
-import { address, textIsAddress, trimBareUrl } from "../src/tui/md/links.js";
+import { address, labelMayLink, textIsAddress, trimBareUrl } from "../src/tui/md/links.js";
 import { md, plain } from "./fixtures/md/helpers.js";
 
 /** Text of a rendering with each linked span marked `{→address}`. */
@@ -21,9 +21,86 @@ test("a link shows its text, then the address in full in muted text", () => {
   assert.equal(addr.style?.fg, "muted");
   assert.equal(addr.style?.link, "https://example.com/a?b=1#c");
   const text = lines[0]!.find((s) => s.text === "the docs")!;
-  // Only the address opens anything: what a terminal opens is exactly what is shown.
-  assert.equal(text.style?.link, undefined);
+  // The text opens the same address as the one printed after it.
+  assert.equal(text.style?.link, "https://example.com/a?b=1#c");
   assert.equal(text.style?.underline, true);
+});
+
+test("the label links to the printed address unless it reads as a different address", () => {
+  assert.equal(show("[the docs](https://docs.example/a)"), "the docs{→https://docs.example/a} (https://docs.example/a){→https://docs.example/a}");
+  // Reads as another address: only the printed address opens anything.
+  assert.equal(show("[log in at paypal.com](https://evil.example/)"), "log in at paypal.com (https://evil.example/){→https://evil.example/}");
+  // Formatting inside the label carries the link too; an image inside never does.
+  assert.equal(show("[**bold** and `code`](https://a.example/x)"), "bold{→https://a.example/x} and {→https://a.example/x}code{→https://a.example/x} (https://a.example/x){→https://a.example/x}");
+  assert.ok(md("[![logo](javascript:x) home](https://site.example)", 200).flat().filter((s) => s.text.includes("logo") || s.text.includes("javascript")).every((s) => !s.style?.link));
+  // Not http, https or mailto: nothing links, label or address.
+  assert.ok(md("[click](javascript:alert(1))", 200).flat().every((s) => !s.style?.link));
+});
+
+/** [label, destination, may the label link?] */
+const LABELS: [string, string, boolean][] = [
+  // Ordinary words link.
+  ["the docs", "https://docs.example/a", true],
+  ["Read more", "http://a.example", true],
+  ["e.g. this one, i.e. that", "https://a.example/", true],
+  ["version 1.2.3", "https://a.example/", true],
+  ["Write to us", "mailto:me@example.com", true],
+  // The destination named in the text: the same host, address or e-mail.
+  ["docs on example.com", "https://example.com/docs", true],
+  ["Example.COM", "https://example.com/", true],
+  ["example.com/docs", "https://example.com/docs", true],
+  ["see https://example.com/docs for more", "https://example.com/docs", true],
+  ["write to me@example.com", "mailto:me@example.com", true],
+  ["ME@Example.com", "mailto:me@example.com", true],
+  // A different URL, with any scheme, case or trailing punctuation.
+  ["https://good.example", "https://evil.example", false],
+  ["HTTPS://GOOD.EXAMPLE/", "https://evil.example", false],
+  ["  https://good.example  ", "https://evil.example", false],
+  ["http://example.com/docs", "https://example.com/docs", false],
+  ["https://example.com/other", "https://example.com/docs", false],
+  ["ftp://good.example", "https://evil.example", false],
+  ["javascript:alert(1)", "https://evil.example", false],
+  ["mailto:boss@good.example", "https://evil.example", false],
+  // A bare host or host with a path, alone or among words, with a trailing slash or dot.
+  ["good.example", "https://evil.example/login", false],
+  ["good.example/", "https://evil.example/", false],
+  ["good.example.", "https://evil.example/", false],
+  ["good.example/login", "https://evil.example/login", false],
+  ["example.com/admin", "https://example.com/logout", false],
+  ["example.com:8443", "https://example.com/", false],
+  ["log in at paypal.com", "https://evil.example/", false],
+  ["log in at paypal.com today", "https://paypal.com.evil.example/", false],
+  ["www.good.example", "https://evil.example/", false],
+  ["sub.good.example", "https://good.example/", false],
+  ["good.example", "https://good.example@evil.example/", false],
+  // Look-alikes and disguises: fullwidth or ideographic dots, invisible characters, Cyrillic letters, punycode.
+  ["paypal．com", "https://evil.example/", false],
+  ["paypal。com", "https://evil.example/", false],
+  ["pay​pal.com", "https://evil.example/", false],
+  ["exаmple.com", "https://example.com/", false],
+  ["example.com", "https://exаmple.com/", false],
+  ["exаmple.com", "https://exаmple.com/", false],
+  ["xn--exmple-4nf.com", "https://xn--exmple-4nf.com/", false],
+  // E-mail addresses that are not the mailto destination, or on an http link.
+  ["me@good.example", "mailto:me@evil.example", false],
+  ["me@good.example", "https://good.example/", false],
+  ["mail us at example.com", "mailto:me@example.com", false],
+  // Other hosts.
+  ["192.168.0.1", "https://evil.example/", false],
+  ["localhost", "http://localhost:3000/", false],
+  ["[::1]", "https://evil.example/", false],
+  // When in doubt: file names read as hosts.
+  ["Node.js docs", "https://nodejs.org/", false],
+  // No link at all for anything but http, https and mailto, and for an empty label.
+  ["click", "javascript:alert(1)", false],
+  ["click", "ftp://files.example/a", false],
+  ["", "https://a.example/", false],
+];
+
+test("labelMayLink: a label links only when it does not read as an address other than the destination", () => {
+  for (const [label, dest, expected] of LABELS) {
+    assert.equal(labelMayLink(label, address(dest)), expected, `${JSON.stringify(label)} → ${dest}`);
+  }
 });
 
 test("when the text is the address it is shown once", () => {
@@ -54,13 +131,13 @@ test("only http, https and mailto get a link; everything else is shown as text",
     assert.equal(plain(lines), `click (${dest})`, `${dest} is shown in full`);
   }
   assert.equal(show("<javascript:alert(1)>"), "javascript:alert(1)");
-  assert.equal(show("[x](mailto:a@b.example)"), "x (mailto:a@b.example){→mailto:a@b.example}");
+  assert.equal(show("[x](mailto:a@b.example)"), "x{→mailto:a@b.example} (mailto:a@b.example){→mailto:a@b.example}");
 });
 
 test("addresses with spaces, parentheses, angle brackets, titles and references", () => {
-  assert.equal(show("[x](<https://a.example/a b>)"), "x (https://a.example/a%20b){→https://a.example/a%20b}");
-  assert.equal(show("[x](https://a.example/a_(b))"), "x (https://a.example/a_(b)){→https://a.example/a_(b)}");
-  assert.equal(show("[x](https://a.example 'title')"), "x (https://a.example){→https://a.example/}");
+  assert.equal(show("[x](<https://a.example/a b>)"), "x{→https://a.example/a%20b} (https://a.example/a%20b){→https://a.example/a%20b}");
+  assert.equal(show("[x](https://a.example/a_(b))"), "x{→https://a.example/a_(b)} (https://a.example/a_(b)){→https://a.example/a_(b)}");
+  assert.equal(show("[x](https://a.example 'title')"), "x{→https://a.example/} (https://a.example){→https://a.example/}");
   // An angle bracket cannot open inside an angle-bracketed address: not a link, shown as written.
   assert.equal(show("[x](<https://a.example/<b>>)"), "[x](<https://a.example/<b>>)");
   // Reference links (full, collapsed, shortcut), case-insensitive labels, first definition wins.

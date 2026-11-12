@@ -250,6 +250,6 @@ test("an answer is Markdown through the renderer: a table, a code block and a li
   assert.ok(link >= 0, "the link's text, then its address in full");
   assert.ok(rows[link]!.includes("and https://memtro.com/docs."), "an address that is its own text is shown once");
   const x = rows[link]!.indexOf("the guide");
-  assert.equal(f.cell(x, link)!.link, undefined, "the text opens nothing: only the address shown does");
+  assert.equal(f.cell(x, link)!.link, "https://example.com/guide/a?b=1#c", "the text opens the address shown after it");
   assert.equal(f.cell(rows[link]!.indexOf("(https://example.com/guide") + 1, link)!.link, "https://example.com/guide/a?b=1#c", "the address is a link to itself");
 });

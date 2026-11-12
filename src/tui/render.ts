@@ -100,6 +100,11 @@ export class TurnRenderer {
     }
   }
 
+  /** A line of the answer has been written without its newline: nothing may clear the current line until it ends. */
+  get lineOpen(): boolean {
+    return this.textOpen;
+  }
+
   /** Ends anything left open (a held-back marker, an unterminated line). */
   finish(): void {
     this.endThinking();

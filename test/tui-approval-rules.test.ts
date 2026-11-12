@@ -69,9 +69,29 @@ test("approval keys: the gate's rules still hold underneath, and refusing is imm
   assert.equal(k2.commit(t0 + 9000 + HOLD_MS), "deny");
 });
 
-/** A terminal's input with a clock the test moves. */
+/**
+ * A terminal's input with a clock and timers the test moves: nothing here waits on a real timer, so a loaded machine
+ * (a shared CI runner) cannot fire the hold early or late relative to the keys. As before the timers were faked, the
+ * clock the keys are stamped with (`key`) and the time the hold's timer runs on (`wait`) are moved separately.
+ */
 function rig(suggested: SessionRule | null = rule) {
   let clock = 10_000;
+  let timerNow = 0;
+  const timers: { at: number; fn: () => void }[] = [];
+  const setTimer = (fn: () => void, ms: number) => {
+    const t = { at: timerNow + ms, fn };
+    timers.push(t);
+    return () => {
+      const i = timers.indexOf(t);
+      if (i >= 0) timers.splice(i, 1);
+    };
+  };
+  const elapse = (ms: number) => {
+    timerNow += ms;
+    for (let due = timers.findIndex((t) => t.at <= timerNow); due >= 0; due = timers.findIndex((t) => t.at <= timerNow)) timers.splice(due, 1)[0]!.fn();
+  };
+  /** Lets the stream deliver what was written (no time passes). */
+  const settle = () => new Promise<void>((r) => setImmediate(r));
   const input = new PassThrough() as PassThrough & { isTTY: boolean; setRawMode: (on: boolean) => void };
   input.isTTY = true;
   input.setRawMode = () => {};
@@ -83,17 +103,23 @@ function rig(suggested: SessionRule | null = rule) {
     },
   });
   const router = new KeyRouter(input, () => clock);
-  const approver = createTtyApprover({ output, router, style: plain, classifierOn: () => true, readNote: async () => "", now: () => clock });
+  const approver = createTtyApprover({ output, router, style: plain, classifierOn: () => true, readNote: async () => "", now: () => clock, setTimer });
   const pending = approver.ask(call(), { verdict: "ask", reason: "Runs the test suite.", source: "classifier" }, suggested);
   let settled: Answer | null = null;
   void pending.then((a) => (settled = a));
   return {
     router,
-    key: (s: string, advance: number) => {
-      clock += advance;
+    /** `s` arrives, stamped `ms` after the key before it. */
+    key: (s: string, ms: number) => {
+      clock += ms;
       input.write(s);
     },
-    wait: (ms: number) => new Promise((r) => setTimeout(r, ms)),
+    /** What was written is delivered, then `ms` pass for the hold's timer (any timer due fires). */
+    wait: async (ms: number) => {
+      await settle();
+      elapse(ms);
+      await settle();
+    },
     answer: () => settled as Answer | null,
     pending,
     text: () => text,
