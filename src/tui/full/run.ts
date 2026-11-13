@@ -2,6 +2,7 @@ import type { Agent, AgentEvent, Answer, Approver, Decision, Message, PendingCal
 import { errorText } from "../../errors.js";
 import type { Session } from "../../session/start.js";
 import { findSlash, otherSessions, parseSlash, runSlash, type SlashHost } from "../slash.js";
+import { Attention, type NotifySetting } from "../attention.js";
 import { style } from "../style.js";
 import { ApprovalPanel, HOLD_MS } from "./app/approval.js";
 import { choiceDialog, helpDialog, modelDialog, paletteDialog, sessionsDialog, toolsDialog } from "./app/commands.js";
@@ -49,6 +50,8 @@ export interface FullOptions {
   /** Writes straight to the terminal, between frames (OSC 52). */
   writeRaw: (s: string) => void;
   env: NodeJS.ProcessEnv;
+  /** Asking for attention when an approval waits or a long turn ends (src/tui/attention.ts). Default "auto". */
+  notify?: NotifySetting;
   now?: () => number;
 }
 
@@ -104,10 +107,12 @@ export class FullApp implements Approver {
   private readonly host: SlashHost;
   private busy = false;
   private themeName: ThemeName;
+  private readonly attention: Attention;
 
   constructor(o: FullOptions) {
     this.o = o;
     this.now = o.now ?? Date.now;
+    this.attention = new Attention({ setting: o.notify ?? "auto", env: o.env, write: (bytes) => o.writeRaw(bytes) });
     this.themeName = o.theme;
     const s = o.session();
     this.state = createState({
@@ -175,6 +180,7 @@ export class FullApp implements Approver {
     for (const t of [this.ticker, this.noticeTimer, this.holdTimer]) if (t) clearTimeout(t);
     this.ticker = this.noticeTimer = this.holdTimer = null;
     this.turn?.abort();
+    this.attention.dispose();
   }
 
   leave(): void {
@@ -220,6 +226,8 @@ export class FullApp implements Approver {
   // -------------------------------------------------------------------------------------------------------------
 
   onInput(input: Input): void {
+    // Only noted here: a focus event still goes on to the panel or the keys exactly as before.
+    if (input.type === "focus") this.attention.setFocus(input.focused);
     if (this.approval) return this.approvalInput(input);
     const r = handleInput(this.state, input, { now: this.now(), menu: this.menuContext() });
     this.set(r.state);
@@ -287,6 +295,7 @@ export class FullApp implements Approver {
   /** One turn or compaction: its events folded into the state, Esc and Ctrl-C stop it. */
   async drive(events: (signal: AbortSignal) => AsyncIterable<AgentEvent>, agent: Agent): Promise<void> {
     const controller = new AbortController();
+    const startedAt = this.now();
     this.turn = controller;
     this.busy = true;
     this.set(beginTurn(this.state, agent.model));
@@ -304,6 +313,8 @@ export class FullApp implements Approver {
       const s = this.session;
       this.set({ ...this.state, running: false, stopping: false, status: { ...this.state.status, mode: s.gate.mode, contextLimit: this.state.status.contextLimit ?? s.contextLimit(s.agent.model) } });
     }
+    // A turn the person stopped needs no signal: they were there.
+    if (!controller.signal.aborted && this.quit) this.attention.turnFinished(this.now() - startedAt);
     const queued = this.state.queued;
     if (queued !== null && this.quit) {
       if (controller.signal.aborted) {
@@ -339,6 +350,7 @@ export class FullApp implements Approver {
       const cleanup = () => signal?.removeEventListener("abort", onAbort);
       this.approval = { panel, resolve, cleanup };
       this.set(markAsking({ ...this.state, view: "conversation", overlay: { kind: "approval", approval: panel.state }, menuDismissed: false }, call.id));
+      this.attention.approvalOpened(call.risk);
       if (signal?.aborted) onAbort();
       else signal?.addEventListener("abort", onAbort, { once: true });
     });
@@ -383,6 +395,7 @@ export class FullApp implements Approver {
     if (this.holdTimer) clearTimeout(this.holdTimer);
     this.holdTimer = null;
     a.cleanup();
+    this.attention.approvalClosed();
     this.set(markAsking({ ...this.state, overlay: { kind: "none" } }, null));
     a.resolve(answer);
     if (interrupt) {

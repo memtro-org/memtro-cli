@@ -69,6 +69,8 @@ export interface ConfigFile {
   theme?: unknown;
   /** false: the full-screen interface leaves the mouse to the terminal (no wheel scrolling, plain selection). */
   mouse?: unknown;
+  /** Asking for attention when an approval waits or a long turn ends: "auto" (default), "bell" or "off". */
+  notify?: unknown;
   /** Anything else in the file is kept as it was when the file is rewritten. */
   [other: string]: unknown;
 }
@@ -233,10 +235,11 @@ export interface InterfaceSettings {
   ui?: "full" | "inline";
   theme?: "auto" | "dark" | "light";
   mouse?: boolean;
+  notify?: "auto" | "bell" | "off";
 }
 
 /**
- * `ui`, `theme` and `mouse` (top level, beside `mode`): how the interactive session looks. A value of the wrong kind
+ * `ui`, `theme`, `mouse` and `notify` (top level, beside `mode`): how the interactive session looks. A value of the wrong kind
  * is a usage error naming the key, like the harness settings.
  */
 export function interfaceSettings(config: ConfigFile, where = "config.json"): InterfaceSettings {
@@ -253,6 +256,10 @@ export function interfaceSettings(config: ConfigFile, where = "config.json"): In
   if (config.mouse !== undefined) {
     if (typeof config.mouse !== "boolean") throw bad("mouse", "true or false", config.mouse);
     out.mouse = config.mouse;
+  }
+  if (config.notify !== undefined) {
+    if (config.notify !== "auto" && config.notify !== "bell" && config.notify !== "off") throw bad("notify", '"auto", "bell" or "off"', config.notify);
+    out.notify = config.notify;
   }
   return out;
 }

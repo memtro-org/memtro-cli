@@ -1,5 +1,6 @@
 import { isAbsolute, relative } from "node:path";
 import type { Answer, Approver, Decision, PendingCall, SessionRule } from "../agent/types.js";
+import type { Attention } from "./attention.js";
 import { KeyRouter, PASTE_END, PASTE_START } from "./keys.js";
 import { colourDiff, whyText } from "./render.js";
 import { oneLine, visible } from "./sanitise.js";
@@ -200,6 +201,8 @@ export interface TtyApproverDeps {
    * machine stretching a real timer cannot change what the test sees.
    */
   setTimer?: (fn: () => void, ms: number) => () => void;
+  /** Asks for the person's attention while the prompt waits (src/tui/attention.ts). Writes only; reads no keys. */
+  attention?: Attention;
 }
 
 const realTimer = (fn: () => void, ms: number): (() => void) => {
@@ -214,6 +217,7 @@ export function createTtyApprover(d: TtyApproverDeps): Approver {
     async ask(call, decision, suggested): Promise<Answer> {
       d.beforePrompt?.();
       d.output.write(formatApproval(call, decision, suggested, { style: d.style, classifierOn: d.classifierOn() }));
+      d.attention?.approvalOpened(call.risk);
       const wasAttached = d.router.isAttached;
       d.router.attach();
       const signal = d.signal?.() ?? null;
@@ -274,6 +278,7 @@ export function createTtyApprover(d: TtyApproverDeps): Approver {
           }
         }
       } finally {
+        d.attention?.approvalClosed();
         if (wasAttached) d.router.attach();
         else d.router.detach();
         d.afterPrompt?.();

@@ -8,6 +8,7 @@ import { errorText, UsageError } from "../errors.js";
 import { colourAllowed, paint } from "../output.js";
 import { normaliseModel, startSession, UNCHECKED_WARNING, type Session } from "../session/start.js";
 import { createTtyApprover } from "../tui/approval.js";
+import { Attention, type NotifySetting } from "../tui/attention.js";
 import type { BaseHost, FullApp, ThemeName } from "../tui/full/run.js";
 import { Composer, historyFile, readOneLine } from "../tui/input.js";
 import { interruptKey, KeyRouter, type TtyIn } from "../tui/keys.js";
@@ -46,7 +47,7 @@ export async function chat(ctx: Context, deps: ChatDeps = {}): Promise<number> {
     term: ctx.env.TERM,
   });
   if (which === "full") return chatFull(ctx, deps, ui);
-  return chatInline(ctx, deps);
+  return chatInline(ctx, deps, ui);
 }
 
 /** The smallest terminal the full-screen interface is drawn in. */
@@ -68,7 +69,7 @@ export function chooseInterface(i: { inlineFlag: boolean; configured?: "full" | 
  * The inline interface: output scrolls like any command's, the prompt is readline while the agent is idle, and raw
  * keys (Esc, Ctrl-C, an approval's one key) while it works.
  */
-async function chatInline(ctx: Context, deps: ChatDeps): Promise<number> {
+async function chatInline(ctx: Context, deps: ChatDeps, ui: InterfaceSettings): Promise<number> {
   const input = ctx.stdin as TtyIn;
   const out = ctx.stdout;
   const st = style(colourAllowed(out, ctx.env, Boolean(ctx.flags["no-color"])));
@@ -99,6 +100,8 @@ async function chatInline(ctx: Context, deps: ChatDeps): Promise<number> {
     beforePrompt: () => spinner.stop(),
     onInterrupt: () => turn?.abort(),
     signal: () => turn?.signal ?? null,
+    // Only to a terminal: piped output never gets escape sequences or bells.
+    attention: new Attention({ setting: notifySetting(ctx, ui), env: ctx.env, write: (bytes) => (out.isTTY ? void out.write(bytes) : undefined) }),
   });
 
   let session: Session | undefined;
@@ -438,6 +441,7 @@ async function chatFull(ctx: Context, deps: ChatDeps, ui: InterfaceSettings): Pr
         stdout.write(text);
       },
       env: ctx.env,
+      notify: notifySetting(ctx, ui),
     });
     await app.run();
     screen.stop();
@@ -457,6 +461,11 @@ async function chatFull(ctx: Context, deps: ChatDeps, ui: InterfaceSettings): Pr
     stopUpdateCheck();
     guard.dispose();
   }
+}
+
+/** `--no-notify` turns it off; otherwise `notify` in config.json, default "auto". */
+export function notifySetting(ctx: Pick<Context, "flags">, ui: InterfaceSettings): NotifySetting {
+  return bool(ctx.flags["no-notify"]) ? "off" : ui.notify ?? "auto";
 }
 
 /** `--theme`, checked whichever interface runs (the inline one ignores it, but a typo is still a typo). */

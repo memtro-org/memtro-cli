@@ -146,14 +146,25 @@ With `--inline`, `"ui": "inline"` in `config.json`, in a smaller terminal, with 
 
 **Colours.** A dark and a light theme of memtro's own, chosen by `theme` in `config.json` (`"auto"`, `"dark"` or `"light"`), `--theme`, or `/theme`. Colours drop to 256 or 16 when the terminal has fewer, and to none with `NO_COLOR` or `--no-color`, where the selected row is also marked with `>`.
 
+**When memtro needs you.** If an approval is waiting, or a turn that took ten seconds or more has finished, while you are looking at another tab or window, memtro asks your terminal for attention, once per event (never again for redraws, resizes or while the same question stays open). The full-screen interface knows where you are from the terminal's focus reports: if the terminal says it is focused, nothing is sent; if it says it is not, the signal goes at once; if it has never said, an approval signals after it has waited six seconds and a finished turn signals nothing. The inline interface gets no focus reports, so there an approval always signals after six seconds. What is sent depends on the terminal:
+
+| Terminal | What it gets |
+|---|---|
+| iTerm2 | OSC 9, iTerm2's notification request. A background tab shows its blue new-output dot. iTerm2 decides whether a banner appears: turn on Settings → Profiles → Terminal → "Notification Center alerts" (off by default) and, under Filter Alerts, "Send escape sequence-generated alerts" (on by default), and allow iTerm2 notifications in macOS; then you also get a Dock badge. For an approval, iTerm2 3.7 and later also show the tab's "waiting" status (a blue dot and the word "waiting", the status Claude Code's iTerm2 integration uses), taken off again when you answer. No bell, so a profile with "Show bell icon in tabs" keeps the dot. |
+| kitty | Its own notification (OSC 99). |
+| Ghostty, WezTerm | A desktop notification (OSC 9). |
+| Inside tmux or GNU screen, Terminal.app, VS Code, Windows Terminal, anything else | The bell. tmux marks the window and passes the bell on to your terminal by default; Terminal.app flashes or bounces the Dock icon as its profile's bell settings say. |
+
+The text says what kind of call is waiting ("memtro needs you: allow it to run a command?"), never the command itself. `"notify": "bell"` in `config.json` sends the bell instead in every terminal; `"notify": "off"` or `--no-notify` turns it off. Nothing is sent in `memtro run`, with `--json`, or when output is not a terminal.
+
 When a newer release is known, the start screen (or, inline, the session's first lines) says so ("memtro 0.3.0 is available (you have 0.2.0). Type /update."). That comes from the answer of the last check, kept on disk; a new check runs in the background, at most once a day, never delays start-up and prints nothing. It asks GitHub for the latest release and sends nothing about you or your key. `MEMTRO_NO_UPDATE_CHECK=1`, or `"updateCheck": false` in `config.json`, turns the line off; `/update` still works. It is never shown in `memtro run`, with `--json`, or when stdout is not a terminal.
 
 In the inline interface, after each turn one line says which model answered, the tokens the turn used, how much of the context window is in use, and the mode.
 
-Options: `--model <id>`, `--mode ask|auto`, `--continue` (this directory's latest session), `--resume [<id>]`, `--actions`, `--no-classifier`, `--allow-edits`, `--allow "<command prefix>"` (repeatable), `--unchecked`, plus the usual `--profile`, `--base-url`, `--no-browser`, `--verbose`, `--json` (for `run`). For the interactive session only: `--inline`, `--theme auto|dark|light`, `--no-mouse`. The same settings can live in `config.json` beside `profiles`:
+Options: `--model <id>`, `--mode ask|auto`, `--continue` (this directory's latest session), `--resume [<id>]`, `--actions`, `--no-classifier`, `--allow-edits`, `--allow "<command prefix>"` (repeatable), `--unchecked`, plus the usual `--profile`, `--base-url`, `--no-browser`, `--verbose`, `--json` (for `run`). For the interactive session only: `--inline`, `--theme auto|dark|light`, `--no-mouse`, `--no-notify`. The same settings can live in `config.json` beside `profiles`:
 
 ```json
-{ "mode": "auto", "classifier": { "model": "anthropic/claude-haiku-4-5-20251001", "enabled": true, "timeoutMs": 8000 }, "actions": false, "updateCheck": true, "ui": "full", "theme": "auto", "mouse": true }
+{ "mode": "auto", "classifier": { "model": "anthropic/claude-haiku-4-5-20251001", "enabled": true, "timeoutMs": 8000 }, "actions": false, "updateCheck": true, "ui": "full", "theme": "auto", "mouse": true, "notify": "auto" }
 ```
 
 `classifier.timeoutMs` is how long, in milliseconds, the safety check may take before the call is put to you instead: a whole number, default 8000. Anything above 60000 is treated as 60000.

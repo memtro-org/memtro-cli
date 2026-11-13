@@ -43,6 +43,7 @@ export const INTERFACE_OPTIONS = {
   inline: { type: "boolean" },
   theme: { type: "string" },
   "no-mouse": { type: "boolean" },
+  "no-notify": { type: "boolean" },
 } as const satisfies Options;
 
 /** Only without a command: `memtro -p "<task>"` is `memtro run "<task>"`. */
@@ -54,7 +55,10 @@ export const INTERFACE_DETAILS =
   "                      (also \"ui\": \"inline\" in config.json; chosen by itself in a terminal smaller than 50x12,\n" +
   "                      with TERM=dumb, or when output is not a terminal)\n" +
   "  --theme auto|dark|light  The full screen's colours (default auto: follows the terminal's background)\n" +
-  "  --no-mouse          Leave the mouse to the terminal: no wheel scrolling, ordinary text selection";
+  "  --no-mouse          Leave the mouse to the terminal: no wheel scrolling, ordinary text selection\n" +
+  "  --no-notify         Do not ask for your attention (iTerm2's tab dot and notification, or the bell) when an\n" +
+  "                      approval waits or a long turn ends while you are elsewhere (also \"notify\": \"off\"; \"bell\"\n" +
+  "                      for the bell only)";
 
 export const HARNESS_DETAILS =
   "Options for a session (memtro, memtro -p, memtro run):\n" +
